@@ -60,7 +60,10 @@ public sealed class QosFlow : IDisposable
             uint flowId = 0;
             if (!QOSAddSocketToFlow(_handle, s.Handle, sa, QOSTrafficTypeBestEffort, QOS_NON_ADAPTIVE_FLOW, ref flowId))
             {
-                error = $"QOSAddSocketToFlow failed (error {Marshal.GetLastWin32Error()})";
+                int e = Marshal.GetLastWin32Error();
+                error = e == 1168
+                    ? "Windows can't DSCP-mark traffic to this computer itself (loopback); marking works between two machines"
+                    : $"QOSAddSocketToFlow failed (error {e})";
                 return false;
             }
             uint value = (uint)dscp;

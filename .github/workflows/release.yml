@@ -27,6 +27,7 @@ jobs:
           $apps = @(
             @{ Project = 'src/LinkTest.Client'; Asset = 'LinkTest-Client-win-x64.zip' },
             @{ Project = 'src/LinkTest.Server'; Asset = 'LinkTest-Server-win-x64.zip' },
+            @{ Project = 'src/LinkTest.ServerGui'; Asset = 'LinkTest-ServerGui-win-x64.zip' },
             @{ Project = 'src/LinkTest.Cli';    Asset = 'LinkTest-Cli-win-x64.zip' }
           )
           New-Item -ItemType Directory -Force dist | Out-Null

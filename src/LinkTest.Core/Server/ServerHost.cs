@@ -8,7 +8,8 @@ using LinkTest.Core;
 
 namespace LinkTest.Server;
 
-sealed class ServerHost
+/// <summary>The LinkTest server: accepts control/stream connections and UDP traffic, and runs sessions.</summary>
+public sealed class ServerHost
 {
     readonly ServerOptions _opts;
     readonly ConcurrentDictionary<uint, ServerSession> _sessions = new();
@@ -22,11 +23,22 @@ sealed class ServerHost
     public ServerOptions Options => _opts;
     public int SessionCount => _sessions.Count;
     public Socket UdpSocket => _udp;
+    /// <summary>Print per-session statistics to the log every 5 s.</summary>
+    public bool PeriodicStatus { get; set; } = true;
+
+    /// <summary>Raised for every log line (already timestamped).</summary>
+    public static event Action<string>? LogMessage;
+    /// <summary>Also write log lines to the console (console server).</summary>
+    public static bool ConsoleOutput { get; set; } = true;
 
     public static void Log(string msg)
     {
-        lock (ConsoleLock) Console.WriteLine($"{DateTime.Now:HH:mm:ss} {msg}");
+        string line = $"{DateTime.Now:HH:mm:ss} {msg}";
+        if (ConsoleOutput) lock (ConsoleLock) Console.WriteLine(line);
+        LogMessage?.Invoke(line);
     }
+
+    public IReadOnlyList<SessionSnapshot> GetSessions() => _sessions.Values.Select(s => s.Snapshot()).OrderBy(s => s.Started).ToList();
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -207,7 +219,6 @@ sealed class ServerHost
                     s.OnUdpData(buf.AsSpan(0, n), h, ep, now);
                     break;
                 case PacketType.ProbeReq:
-                    s.NoteUdpEndpoint(ep);
                     buf[3] = (byte)PacketType.ProbeResp;
                     SendUdp(buf, n, ep);
                     break;
@@ -222,7 +233,7 @@ sealed class ServerHost
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(5000, ct);
-                foreach (var s in _sessions.Values) s.PrintStatus();
+                if (PeriodicStatus) foreach (var s in _sessions.Values) s.PrintStatus();
             }
         }
         catch (OperationCanceledException) { }

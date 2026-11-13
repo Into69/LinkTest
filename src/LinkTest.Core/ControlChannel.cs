@@ -28,6 +28,8 @@ public sealed class ControlMessage
     public StatsReport? Report { get; set; }
     /// <summary>Final receive report for the TCP traffic in mixed mode.</summary>
     public StatsReport? TcpReport { get; set; }
+    /// <summary>Final receive report per traffic class, in class order (1.3+).</summary>
+    public List<StatsReport>? ClassReports { get; set; }
 }
 
 public sealed class ControlChannel : IDisposable

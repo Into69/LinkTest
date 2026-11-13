@@ -45,21 +45,26 @@ public sealed class TestConfig
     public double UdpSharePct { get; set; } = 30;
     /// <summary>DSCP value to mark traffic with (0 = none). Needs Administrator on Windows.</summary>
     public int Dscp { get; set; }
+    /// <summary>
+    /// DSCP "Simulate" mode: run a multi-class enterprise mix (<see cref="Classes"/>, or the built-in
+    /// <see cref="TrafficClasses.EnterpriseMix"/>), each class with its own marking and statistics.
+    /// Overrides Protocol / Profile / UdpSharePct / Streams.
+    /// </summary>
+    public bool DscpSimulate { get; set; }
+    /// <summary>Custom class list for Simulate mode (null = built-in enterprise mix).</summary>
+    public List<TrafficClass>? Classes { get; set; }
     /// <summary>0 = run until stopped.</summary>
     public int DurationSec { get; set; }
 
-    public TestConfig Clone() => (TestConfig)MemberwiseClone();
-
-    [JsonIgnore] public bool UsesUdp => Protocol is TransportKind.Udp or TransportKind.Mixed;
-    [JsonIgnore] public bool UsesTcp => Protocol is TransportKind.Tcp or TransportKind.Mixed;
-
-    /// <summary>Splits a rate into its UDP and TCP parts according to the mode.</summary>
-    public (double udpMbps, double tcpMbps) SplitRate(double mbps) => Protocol switch
+    public TestConfig Clone()
     {
-        TransportKind.Udp => (mbps, 0),
-        TransportKind.Tcp => (0, mbps),
-        _ => (mbps * UdpSharePct / 100, mbps * (100 - UdpSharePct) / 100),
-    };
+        var c = (TestConfig)MemberwiseClone();
+        c.Classes = Classes?.Select(k => k.Clone()).ToList();
+        return c;
+    }
+
+    [JsonIgnore] public bool UsesUdp => TrafficClasses.Resolve(this).Any(k => k.Transport == TransportKind.Udp);
+    [JsonIgnore] public bool UsesTcp => TrafficClasses.Resolve(this).Any(k => k.Transport == TransportKind.Tcp);
 
     public void Normalize()
     {
@@ -69,14 +74,16 @@ public sealed class TestConfig
         BurstOnMs = Math.Clamp(BurstOnMs, 1, 60_000);
         BurstOffMs = Math.Clamp(BurstOffMs, 0, 60_000);
         if (!Enum.IsDefined(Protocol)) Protocol = TransportKind.Udp;
-        Streams = UsesTcp ? Math.Clamp(Streams, 1, 16) : 1;
+        Streams = Protocol != TransportKind.Udp ? Math.Clamp(Streams, 1, 16) : 1;
         UdpSharePct = double.IsFinite(UdpSharePct) ? Math.Clamp(UdpSharePct, 0, 100) : 30;
         Dscp = Math.Clamp(Dscp, 0, 63);
         DurationSec = Math.Max(0, DurationSec);
+        Classes = DscpSimulate ? TrafficClasses.Resolve(this) : null;   // echoed back by the server
     }
 
-    public override string ToString() =>
-        (Protocol == TransportKind.Mixed ? $"Mixed ({UdpSharePct:0.#}% UDP / {100 - UdpSharePct:0.#}% TCP)" : Protocol.ToString()) +
+    public override string ToString() => DscpSimulate
+        ? $"DSCP simulate ({TrafficClasses.Resolve(this).Count} classes) up {UpMbps:0.###} Mbps / down {DownMbps:0.###} Mbps, {PacketSize} B"
+        : (Protocol == TransportKind.Mixed ? $"Mixed ({UdpSharePct:0.#}% UDP / {100 - UdpSharePct:0.#}% TCP)" : Protocol.ToString()) +
         $" up {UpMbps:0.###} Mbps / down {DownMbps:0.###} Mbps, {Profile}, {PacketSize} B" +
         (UsesTcp ? $", {Streams} TCP stream(s)" : "") +
         (Dscp > 0 ? $", DSCP {Dscp}" : "");

@@ -48,7 +48,8 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --size BYTES       packet / write size (default 1400)
           --profile NAME     constant|imix|bursty|random|voip|video (default constant)
           --streams N        parallel TCP streams (default 1)
-          --dscp N           DSCP marking (needs Administrator)
+          --dscp N|simulate  DSCP marking (needs Administrator); 'simulate' runs a 10-class enterprise
+                             mix (voice EF, video AF41, ... scavenger CS1), each class measured separately
           --time SEC         duration, 0 = until Ctrl+C (default 10)
           --key SECRET       server shared key
           --tunnels LIST     'default', 'all', 'none' or comma-separated name fragments (default: default)
@@ -78,7 +79,11 @@ for (int i = 1; i < args.Length; i++)
         case "--size": cfg.PacketSize = int.Parse(Next()); break;
         case "--profile": cfg.Profile = Enum.Parse<TrafficProfile>(Next(), true); break;
         case "--streams": cfg.Streams = int.Parse(Next()); break;
-        case "--dscp": cfg.Dscp = int.Parse(Next()); break;
+        case "--dscp":
+            string d = Next();
+            if (d.Equals("simulate", StringComparison.OrdinalIgnoreCase)) cfg.DscpSimulate = true;
+            else cfg.Dscp = int.Parse(d);
+            break;
         case "--time": cfg.DurationSec = int.Parse(Next()); break;
         case "--key": key = Next(); break;
         case "--tunnels": tunnelSel = Next(); break;
@@ -125,6 +130,14 @@ while (!cts.IsCancellationRequested && !ended.Task.IsCompleted)
     if (ended.Task.IsCompleted) break;
     var s = session.TakeSample();
     csv?.Write(s, session.TunnelSummaryLine());
+    if (s.Classes.Count > 2 && (int)Math.Round(s.ElapsedSec) % 5 == 0)
+    {
+        static string G(double v, string fmt) => double.IsFinite(v) ? v.ToString(fmt, CultureInfo.InvariantCulture) : "-";
+        Console.WriteLine($"    {"class",-20} {"dscp",-10} {"proto",-5} {"up Mbps",8} {"loss%",6} {"down Mbps",9} {"loss%",6} {"jit ms",7} {"rtt ms",7}");
+        foreach (var c in s.Classes)
+            Console.WriteLine($"    {c.Name,-20} {DscpNames.Name(c.Dscp),-10} {c.Transport,-5} {G(c.UpMbps, "0.00"),8} {G(c.UpLossPct, "0.00"),6} " +
+                              $"{G(c.DownMbps, "0.00"),9} {G(c.DownLossPct, "0.00"),6} {G(c.DownJitterMs, "0.00"),7} {G(c.RttMs, "0.00"),7}");
+    }
     static string F(double v, string fmt) => double.IsFinite(v) ? v.ToString(fmt, CultureInfo.InvariantCulture) : "-";
     Console.WriteLine($"{s.ElapsedSec,6:0} | {F(s.TxMbps, "0.00"),9} | {F(s.UpMbps, "0.00"),9} {F(s.UpLossPct, "0.00"),6} {F(s.UpJitterMs, "0.00"),7}{(s.UpReportStale ? "*" : " ")}" +
                       $"| {F(s.DownMbps, "0.00"),9} {F(s.DownLossPct, "0.00"),6} {F(s.DownJitterMs, "0.00"),7} | " +

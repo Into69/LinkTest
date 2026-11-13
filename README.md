@@ -7,6 +7,7 @@ different **VPN tunnel types** would behave on the link: would they drop, and wo
 | Program | What it is |
 |---|---|
 | `LinkTestServer.exe` | Console server. Run it on the far end of the link. |
+| `LinkTestServerGui.exe` | The same server with a window. It has settings, start/stop, live test sessions, the log, a button that adds firewall rules, and updates. |
 | `LinkTestClient.exe` | Windows GUI client. Choose the server, the rates and the traffic type, then watch live stats. |
 | `LinkTestCli.exe` | Headless client with the same engine, for scripting and long-term monitoring. |
 
@@ -45,7 +46,29 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
   (monitoring mode).
 - **Packet size**, **TCP parallel streams** and **duration** (0 = until stopped).
 - **Traffic profile**: Constant, IMIX, Bursty (on/off), Random (Poisson), VoIP (G.711 frames), Video (30 fps with I-frames).
-- **DSCP marking** through Windows qWAVE. This requires running as Administrator.
+- **DSCP marking** through Windows qWAVE. This requires running as Administrator, and it only works between
+  two machines: Windows cannot mark traffic to its own addresses.
+- **DSCP Simulate** runs a typical enterprise traffic mix of 10 classes at once. Each class has its own
+  socket(s), DSCP value, transport, traffic pattern and statistics, shown on the *Traffic classes* tab.
+  This shows whether the network's QoS protects voice and video while bulk and scavenger traffic take the
+  loss:
+
+  | Class | DSCP | Transport | Share | Pattern |
+  |---|---|---|---|---|
+  | Voice | EF (46) | UDP | 10% | G.711 VoIP |
+  | Video conferencing | AF41 (34) | UDP | 18% | 30 fps video |
+  | Network control | CS6 (48) | UDP | 2% | small constant |
+  | OAM / management | CS2 (16) | UDP | 1% | small random |
+  | Call signaling | CS3 (24) | TCP | 2% | small random |
+  | Streaming video | AF31 (26) | TCP | 12% | video |
+  | Transactional data | AF21 (18) | TCP | 12% | random (web/apps) |
+  | Bulk data | AF11 (10) | TCP | 12% | constant |
+  | Best effort | BE (0) | TCP | 30% | IMIX |
+  | Scavenger | CS1 (8) | TCP | 1% | constant |
+
+  Class names and DSCP values follow RFC 4594 and the Cisco QoS baseline. The shares follow common design
+  guidance: real-time traffic at most about 33% of the link, best effort at least 25%, scavenger about 1%.
+  The individual percentages are representative, not a standard.
 - **Artificial loss %**: a testing aid. The client randomly drops this share of packets in both directions.
 - **CSV logging**: writes one row per second.
 
@@ -57,6 +80,8 @@ The programs update themselves from this repository's **GitHub Releases**.
 
 - **Client**: checks at startup (this can be turned off in the version menu at the bottom right). When a
   newer release exists, a banner offers *Install and restart*.
+- **Server GUI**: shows an update link in the status bar. It can install updates automatically when no
+  tests are running, and it restarts the server afterwards.
 - **Server**: logs a notice when an update is available. `LinkTestServer --update` installs it now.
   `--auto-update` checks every 6 hours, installs when no tests are running, and restarts with the same
   arguments. `--no-update-check` disables checking.

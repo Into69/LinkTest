@@ -14,6 +14,7 @@ public sealed record UpdateChannel(string AssetName, string ExeName)
     public static readonly UpdateChannel Client = new("LinkTest-Client-win-x64.zip", "LinkTestClient.exe");
     public static readonly UpdateChannel Server = new("LinkTest-Server-win-x64.zip", "LinkTestServer.exe");
     public static readonly UpdateChannel Cli = new("LinkTest-Cli-win-x64.zip", "LinkTestCli.exe");
+    public static readonly UpdateChannel ServerGui = new("LinkTest-ServerGui-win-x64.zip", "LinkTestServerGui.exe");
 }
 
 public sealed record UpdateInfo(Version Version, string Tag, string DownloadUrl, long Size, string? Sha256, string Notes, string PageUrl);

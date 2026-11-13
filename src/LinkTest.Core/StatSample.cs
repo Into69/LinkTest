@@ -52,6 +52,9 @@ public sealed class StatSample
     /// <summary>Mixed mode: RTT measured on the TCP streams (includes TCP queueing).</summary>
     public double RttTcpMs { get; init; } = double.NaN;
 
+    /// <summary>Per traffic class figures (one entry per class, in class order).</summary>
+    public IReadOnlyList<ClassStat> Classes { get; init; } = Array.Empty<ClassStat>();
+
     /// <summary>Estimated VoIP MOS (ITU-T G.107 simplified) from RTT, worst jitter and worst loss.</summary>
     public double Mos { get; init; } = double.NaN;
 
@@ -66,6 +69,14 @@ public sealed class StatSample
         return Math.Clamp(1 + 0.035 * r + 7e-6 * r * (r - 60) * (100 - r), 1, 4.5);
     }
 }
+
+/// <summary>One traffic class within a sample. NaN = not available this interval.</summary>
+public sealed record ClassStat(
+    string Name, TransportKind Transport, int Dscp, double SharePct,
+    double UpMbps, double UpLossPct, double UpJitterMs,
+    double DownMbps, double DownLossPct, double DownJitterMs,
+    double RttMs, long UpRetransBytes, long DownRetransBytes,
+    long UpLostTotal, long DownLostTotal);
 
 public sealed class CsvLogger : IDisposable
 {

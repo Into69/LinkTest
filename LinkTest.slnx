@@ -4,5 +4,6 @@
     <Project Path="src/LinkTest.Client/LinkTest.Client.csproj" />
     <Project Path="src/LinkTest.Core/LinkTest.Core.csproj" />
     <Project Path="src/LinkTest.Server/LinkTest.Server.csproj" />
+    <Project Path="src/LinkTest.ServerGui/LinkTest.ServerGui.csproj" />
   </Folder>
 </Solution>

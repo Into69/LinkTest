@@ -6,10 +6,11 @@ using LinkTest.Core.Tunnels;
 
 namespace LinkTest.Core;
 
-/// <summary>Client side of a test: connects to the server, runs the data streams and tunnel simulations.</summary>
+/// <summary>Client side of a test: connects to the server, runs the traffic classes and tunnel simulations.</summary>
 /// <remarks>
-/// UDP and TCP traffic each have their own <see cref="LinkEngine"/> (sequence space, loss/jitter accounting,
-/// RTT echo and in-band reports). Mixed mode runs both at once.
+/// A test is a list of <see cref="TrafficClass"/>es (see <see cref="TrafficClasses.Resolve"/>). Each class has
+/// its own <see cref="LinkEngine"/> (sequence space, loss/jitter accounting, RTT echo, in-band reports) and its
+/// own sockets, so it can carry its own DSCP marking and be measured separately.
 /// </remarks>
 public sealed class ClientSession : IDisposable
 {
@@ -22,17 +23,24 @@ public sealed class ClientSession : IDisposable
     public IPEndPoint? ServerEndPoint { get; private set; }
     public DateTime StartedAt { get; private set; }
     public IReadOnlyList<TunnelSim> Tunnels => _tunnels;
+    public IReadOnlyList<TrafficClass> Classes => _classes.Select(c => c.Def).ToList();
     public bool IsRunning => _running && !_stopping;
-    /// <summary>Server's final receive report for the UDP traffic (or TCP in TCP-only mode).</summary>
-    public StatsReport? FinalServerReport { get; private set; }
-    /// <summary>Server's final receive report for the TCP traffic in mixed mode.</summary>
-    public StatsReport? FinalServerTcpReport { get; private set; }
 
-    LinkEngine? _udpEng, _tcpEng;
-    EngineMeter? _udpMeter, _tcpMeter;
+    sealed class ClassRuntime
+    {
+        public required int Index;
+        public required TrafficClass Def;
+        public required LinkEngine Eng;
+        public Socket? Udp;
+        public readonly List<Socket> Tcp = new();
+        public EngineMeter Meter = null!;
+        public StatsReport? Final;
+        public bool IsUdp => Def.Transport == TransportKind.Udp;
+    }
+
+    readonly List<ClassRuntime> _classes = new();
     ControlChannel? _ctrl;
-    Socket? _udp;
-    readonly List<Socket> _streams = new();
+    Socket? _probe;                      // tunnel probes
     readonly List<TunnelSim> _tunnels = new();
     readonly List<Thread> _senderThreads = new();
     readonly CancellationTokenSource _senderCts = new();
@@ -56,7 +64,7 @@ public sealed class ClientSession : IDisposable
                ?? throw new SocketException((int)SocketError.HostNotFound);
     }
 
-    /// <param name="artificialLossPct">Extra random loss applied by the client in both directions (testing aid).</param>
+    /// <param name="artificialLossPct">Extra random loss applied by the client to UDP in both directions (testing aid).</param>
     public async Task StartAsync(string host, int port, string? key, TestConfig config,
         IEnumerable<TunnelProfile> tunnels, double artificialLossPct, CancellationToken ct)
     {
@@ -90,49 +98,53 @@ public sealed class ClientSession : IDisposable
                     (config.Protocol == TransportKind.Mixed ? " - it may be older than 1.2 and not support mixed TCP+UDP mode; update the server" : ""));
             if (welcome.Type == "error") throw new InvalidOperationException("Server refused the test: " + welcome.Message);
             if (welcome.Type != "welcome") throw new InvalidDataException("Unexpected reply from server: " + welcome.Type);
+            if (config.DscpSimulate && welcome.Config?.DscpSimulate != true)
+                throw new NotSupportedException("The server is older than 1.3 and does not support DSCP Simulate mode; update the server.");
 
             SessionId = welcome.SessionId;
             Config = welcome.Config ?? config;
             if (!string.IsNullOrEmpty(welcome.Message)) Emit("Server: " + welcome.Message);
-
             _lossPct = Math.Clamp(artificialLossPct, 0, 100);
-            if (Config.UsesUdp) { _udpEng = new LinkEngine(SessionId) { TxDropPct = _lossPct }; _udpMeter = new EngineMeter(_udpEng, null); }
-            if (Config.UsesTcp) { _tcpEng = new LinkEngine(SessionId); _tcpMeter = new EngineMeter(_tcpEng, () => TcpInfo.Sum(_streams)); }
 
-            // UDP socket: carries UDP data and tunnel probes in every mode.
-            _udp = new Socket(ip.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-            Protocol.TuneUdp(_udp);
-            _udp.Connect(new IPEndPoint(ip, welcome.UdpPort));
-
-            if (_tcpEng != null)
+            // Classes, sockets and engines
+            var defs = TrafficClasses.Resolve(Config);
+            int tcpOrdinal = 0;
+            for (int i = 0; i < defs.Count; i++)
             {
-                for (int i = 0; i < Config.Streams; i++)
+                var rt = new ClassRuntime { Index = i, Def = defs[i], Eng = new LinkEngine(SessionId) };
+                if (rt.IsUdp)
                 {
-                    var s = await ConnectTcpAsync(ServerEndPoint, ct);
-                    var hello = new byte[7];
-                    hello[0] = Protocol.ConnStream;
-                    BinaryPrimitives.WriteUInt32LittleEndian(hello.AsSpan(1), SessionId);
-                    BinaryPrimitives.WriteUInt16LittleEndian(hello.AsSpan(5), (ushort)i);
-                    s.Send(hello);
-                    var ack = new byte[1];
-                    using var t = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    t.CancelAfter(TimeSpan.FromSeconds(10));
-                    if (!await Protocol.ReceiveExactAsync(s, ack, t.Token) || ack[0] != 1)
-                        throw new IOException($"Server rejected TCP stream {i}");
-                    _streams.Add(s);
+                    rt.Eng.TxDropPct = _lossPct;
+                    rt.Udp = new Socket(ip.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+                    Protocol.TuneUdp(rt.Udp);
+                    rt.Udp.Connect(new IPEndPoint(ip, welcome.UdpPort));
+                    rt.Meter = new EngineMeter(rt.Eng, null);
                 }
-                _tcpEng.TcpInfoProvider = () => TcpInfo.Sum(_streams);
+                else
+                {
+                    for (int n = 0; n < rt.Def.Streams; n++)
+                        rt.Tcp.Add(await OpenStreamAsync(TrafficClasses.EncodeStream(tcpOrdinal, n), ct));
+                    tcpOrdinal++;
+                    var socks = rt.Tcp;
+                    rt.Eng.TcpInfoProvider = () => TcpInfo.Sum(socks);
+                    rt.Meter = new EngineMeter(rt.Eng, () => TcpInfo.Sum(socks));
+                }
+                _classes.Add(rt);
             }
+            _probe = new Socket(ip.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            Protocol.TuneUdp(_probe);
+            _probe.Connect(new IPEndPoint(ip, welcome.UdpPort));
 
-            if (Config.Dscp > 0) ApplyDscp();
+            ApplyDscp();
 
             // Receivers
-            StartThread("udp-rx", UdpReceiveLoop, isSender: false);
-            for (int i = 0; i < _streams.Count; i++)
+            foreach (var rt in _classes)
             {
-                var s = _streams[i];
-                StartThread($"tcp-rx-{i}", () => TcpReceiveLoop(s), isSender: false);
+                var c = rt;
+                if (c.IsUdp) StartThread($"udp-rx-{c.Index}", () => UdpReceiveLoop(c), isSender: false);
+                else foreach (var s in c.Tcp) { var sock = s; StartThread($"tcp-rx-{c.Index}", () => TcpReceiveLoop(c, sock), isSender: false); }
             }
+            StartThread("probe-rx", ProbeReceiveLoop, isSender: false);
             _ = Task.Run(ControlLoopAsync);
 
             // Go
@@ -141,22 +153,24 @@ public sealed class ClientSession : IDisposable
             _startUs = _prevUs = Clock.NowUs;
 
             var token = _senderCts.Token;
-            var (udpUp, tcpUp) = Config.SplitRate(Config.UpMbps);
-            if (_udpEng != null)
+            foreach (var rt in _classes)
             {
-                var spec = SenderSpec.From(Config, udpUp);
-                var eng = _udpEng;
-                StartThread("udp-tx", () => eng.RunSender(0, spec, SendUdp, token), isSender: true);
-            }
-            if (_tcpEng != null)
-            {
-                var eng = _tcpEng;
-                for (int i = 0; i < _streams.Count; i++)
+                var c = rt;
+                if (c.IsUdp)
                 {
-                    var s = _streams[i];
-                    int idx = i;
-                    var spec = SenderSpec.From(Config, tcpUp / _streams.Count);
-                    StartThread($"tcp-tx-{i}", () => eng.RunSender(idx, spec, (b, n) => { Protocol.SendAll(s, b, n); return true; }, token), isSender: true);
+                    var spec = TrafficClasses.Spec(Config, c.Def, Config.UpMbps);
+                    var sock = c.Udp!;
+                    StartThread($"udp-tx-{c.Index}", () => c.Eng.RunSender(c.Index, spec, (b, n) => SendUdp(sock, b, n), token), isSender: true);
+                }
+                else
+                {
+                    var spec = TrafficClasses.Spec(Config, c.Def, Config.UpMbps, c.Tcp.Count);
+                    for (int n = 0; n < c.Tcp.Count; n++)
+                    {
+                        var s = c.Tcp[n];
+                        int idx = n;
+                        StartThread($"tcp-tx-{c.Index}", () => c.Eng.RunSender(idx, spec, (b, len) => { Protocol.SendAll(s, b, len); return true; }, token), isSender: true);
+                    }
                 }
             }
 
@@ -170,6 +184,10 @@ public sealed class ClientSession : IDisposable
             if (_tunnels.Count > 0) StartThread("tunnels", TunnelLoop, isSender: true);
 
             Emit($"Test running (session {SessionId:X8}): {Config}" + (artificialLossPct > 0 ? $", artificial loss {artificialLossPct}%" : ""));
+            if (_classes.Count > 2)
+                foreach (var c in _classes)
+                    Emit($"  class {c.Def.Name}: {c.Def.Transport}, {c.Def.DscpName}, {c.Def.SharePct:0.#}% = " +
+                         $"{Config.UpMbps * c.Def.SharePct / 100:0.###} / {Config.DownMbps * c.Def.SharePct / 100:0.###} Mbps, {c.Def.Profile}");
         }
         catch
         {
@@ -177,6 +195,26 @@ public sealed class ClientSession : IDisposable
             Teardown();
             throw;
         }
+    }
+
+    async Task<Socket> OpenStreamAsync(int idx, CancellationToken ct)
+    {
+        var s = await ConnectTcpAsync(ServerEndPoint!, ct);
+        try
+        {
+            var hello = new byte[7];
+            hello[0] = Protocol.ConnStream;
+            BinaryPrimitives.WriteUInt32LittleEndian(hello.AsSpan(1), SessionId);
+            BinaryPrimitives.WriteUInt16LittleEndian(hello.AsSpan(5), (ushort)idx);
+            s.Send(hello);
+            var ack = new byte[1];
+            using var t = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            t.CancelAfter(TimeSpan.FromSeconds(10));
+            if (!await Protocol.ReceiveExactAsync(s, ack, t.Token) || ack[0] != 1)
+                throw new IOException($"Server rejected TCP stream {idx}");
+            return s;
+        }
+        catch { s.Dispose(); throw; }
     }
 
     static async Task<Socket> ConnectTcpAsync(IPEndPoint ep, CancellationToken ct)
@@ -199,11 +237,19 @@ public sealed class ClientSession : IDisposable
 
     void ApplyDscp()
     {
+        if (!_classes.Any(c => c.Def.Dscp > 0)) return;
         _qos = QosFlow.TryCreate(out var err);
         if (_qos == null) { Emit("DSCP not applied: " + err); return; }
-        bool ok = _qos.TryAdd(_udp!, null, Config.Dscp, out err);
-        foreach (var s in _streams) ok &= _qos.TryAdd(s, null, Config.Dscp, out err);
-        Emit(ok ? $"Client traffic marked DSCP {Config.Dscp}" : "DSCP not applied: " + err);
+        string? firstErr = null;
+        int ok = 0, total = 0;
+        foreach (var c in _classes.Where(c => c.Def.Dscp > 0))
+            foreach (var s in c.IsUdp ? new[] { c.Udp! } : c.Tcp.ToArray())
+            {
+                total++;
+                if (_qos.TryAdd(s, null, c.Def.Dscp, out err)) ok++;
+                else firstErr ??= err;
+            }
+        Emit(ok == total ? $"Client traffic DSCP-marked ({total} socket(s))" : $"DSCP marking applied to {ok}/{total} socket(s): {firstErr}");
     }
 
     void StartThread(string name, Action body, bool isSender)
@@ -226,9 +272,9 @@ public sealed class ClientSession : IDisposable
 
     static bool Chance(double pct) => pct > 0 && (_tlsRnd ??= new Random()).NextDouble() * 100 < pct;
 
-    bool SendUdp(byte[] b, int n)
+    static bool SendUdp(Socket s, byte[] b, int n)
     {
-        try { _udp!.Send(b, 0, n, SocketFlags.None); }
+        try { s.Send(b, 0, n, SocketFlags.None); }
         catch (SocketException) { /* transient (e.g. no route / buffer) - counts as lost */ }
         return true;
     }
@@ -248,38 +294,52 @@ public sealed class ClientSession : IDisposable
             Type = PacketType.ProbeReq, SessionId = SessionId, StreamId = (ushort)sim.Index, Flags = kind,
             Seq = seq, SendUs = now, Length = buf.Length,
         }.Write(buf);
-        try { _udp?.Send(buf); } catch (SocketException) { } catch (ObjectDisposedException) { }
+        try { _probe?.Send(buf); } catch (SocketException) { } catch (ObjectDisposedException) { }
     }
 
-    void UdpReceiveLoop()
+    void UdpReceiveLoop(ClassRuntime c)
+    {
+        var buf = new byte[65536];
+        var sock = c.Udp!;
+        while (!_cts.IsCancellationRequested)
+        {
+            int n;
+            try { n = sock.Receive(buf); }
+            catch (SocketException) { if (_cts.IsCancellationRequested) break; continue; }
+            catch (ObjectDisposedException) { break; }
+            long now = Clock.NowUs;
+            if (!PacketHeader.TryRead(buf.AsSpan(0, n), out var h) || h.SessionId != SessionId || h.Type != PacketType.Data) continue;
+            if (Chance(_lossPct)) continue;
+            c.Eng.HandlePacket(buf.AsSpan(0, n), h, now);
+        }
+    }
+
+    void ProbeReceiveLoop()
     {
         var buf = new byte[65536];
         while (!_cts.IsCancellationRequested)
         {
             int n;
-            try { n = _udp!.Receive(buf); }
+            try { n = _probe!.Receive(buf); }
             catch (SocketException) { if (_cts.IsCancellationRequested) break; continue; }
             catch (ObjectDisposedException) { break; }
             long now = Clock.NowUs;
             if (!PacketHeader.TryRead(buf.AsSpan(0, n), out var h) || h.SessionId != SessionId) continue;
             if (Chance(_lossPct)) continue;
-            if (h.Type == PacketType.Data)
-                _udpEng?.HandlePacket(buf.AsSpan(0, n), h, now);
-            else if (h.Type == PacketType.ProbeResp && h.StreamId < _tunnels.Count)
+            if (h.Type == PacketType.ProbeResp && h.StreamId < _tunnels.Count)
                 _tunnels[h.StreamId].OnResponse(h.Seq, h.Flags, h.SendUs, now);
         }
     }
 
-    void TcpReceiveLoop(Socket s)
+    void TcpReceiveLoop(ClassRuntime c, Socket s)
     {
         var buf = new byte[Protocol.MaxPacket];
-        var eng = _tcpEng!;
         while (!_cts.IsCancellationRequested)
         {
             if (!Protocol.ReceiveExact(s, buf, 0, Protocol.HeaderSize)) throw new IOException("TCP stream closed by server");
             if (!PacketHeader.TryRead(buf, out var h)) throw new InvalidDataException("Corrupt TCP stream");
             if (!Protocol.ReceiveExact(s, buf, Protocol.HeaderSize, h.Length - Protocol.HeaderSize)) throw new IOException("TCP stream closed by server");
-            if (h.Type == PacketType.Data) eng.HandlePacket(buf.AsSpan(0, h.Length), h, Clock.NowUs);
+            if (h.Type == PacketType.Data) c.Eng.HandlePacket(buf.AsSpan(0, h.Length), h, Clock.NowUs);
         }
     }
 
@@ -298,8 +358,14 @@ public sealed class ClientSession : IDisposable
                             _tunnels[m.Tunnel].OnResponse(m.Seq, (ushort)m.Kind, m.Time, Clock.NowUs);
                         break;
                     case "final":
-                        FinalServerReport = m.Report;
-                        FinalServerTcpReport = m.TcpReport;
+                        if (m.ClassReports != null)
+                            for (int i = 0; i < m.ClassReports.Count && i < _classes.Count; i++) _classes[i].Final = m.ClassReports[i];
+                        else
+                        {
+                            // Server 1.2: Report = first class, TcpReport = TCP class in mixed mode
+                            if (_classes.Count > 0) _classes[0].Final = m.Report;
+                            if (_classes.Count > 1) _classes[1].Final = m.TcpReport;
+                        }
                         _finalUs = Clock.NowUs;
                         _final.TrySetResult(true);
                         break;
@@ -335,36 +401,61 @@ public sealed class ClientSession : IDisposable
         double dt = Math.Max(1e-3, (now - _prevUs) / 1e6);
         _prevUs = now;
 
-        var u = _udpMeter?.Take(now, dt);
-        var t = _tcpMeter?.Take(now, dt);
-        var p = u ?? t!;                         // headline quality figures come from UDP when present
-        bool mixed = u != null && t != null;
+        var samples = _classes.Select(c => (c, s: c.Meter.Take(now, dt))).ToList();
+        var udp = samples.Where(x => x.c.IsUdp).ToList();
+        var tcp = samples.Where(x => !x.c.IsUdp).ToList();
+        // Quality figures come from UDP (TCP hides loss by retransmitting); the first UDP class is the headline.
+        var quality = udp.Count > 0 ? udp : tcp;
+        var p = quality[0].s;
+        bool mixed = udp.Count > 0 && tcp.Count > 0;
 
-        static double Sum(double a, double b) => double.IsFinite(a) && double.IsFinite(b) ? a + b : double.NaN;
-        double worstJit = Math.Max(p.DownJitterMs, double.IsFinite(p.UpJitterMs) ? p.UpJitterMs : 0);
-        double worstLoss = Math.Max(p.DownLossPct, double.IsFinite(p.UpLossPct) ? p.UpLossPct : 0);
+        static double SumF(IEnumerable<double> v) { double t = 0; foreach (var x in v) { if (!double.IsFinite(x)) return double.NaN; t += x; } return t; }
+        static double Pct(long lost, long exp) => exp > 0 ? 100.0 * lost / exp : 0;
+        static double Max(IEnumerable<double> v) { double m = double.NaN; foreach (var x in v) if (double.IsFinite(x) && !(m >= x)) m = x; return m; }
+
+        long upLostD = quality.Sum(x => x.s.UpLostD), upExpD = quality.Sum(x => x.s.UpExpD);
+        long dnLostD = quality.Sum(x => x.s.DownLostD), dnExpD = quality.Sum(x => x.s.DownExpD);
+        long upLostT = quality.Sum(x => x.s.UpLostTotal), upExpT = quality.Sum(x => x.s.UpExpTotal);
+        long dnLostT = quality.Sum(x => x.s.DownLostTotal), dnExpT = quality.Sum(x => x.s.DownExpTotal);
+
+        double upLoss = quality.All(x => double.IsNaN(x.s.UpLossPct)) ? double.NaN : Pct(upLostD, upExpD);
+        double dnLoss = Pct(dnLostD, dnExpD);
+        double upJit = Max(quality.Select(x => x.s.UpJitterMs));
+        double dnJit = Max(quality.Select(x => x.s.DownJitterMs));
+        double worstJit = Math.Max(double.IsFinite(dnJit) ? dnJit : 0, double.IsFinite(upJit) ? upJit : 0);
+        double worstLoss = Math.Max(dnLoss, double.IsFinite(upLoss) ? upLoss : 0);
+
+        var classStats = samples.Select(x => new ClassStat(
+            x.c.Def.Name, x.c.Def.Transport, x.c.Def.Dscp, x.c.Def.SharePct,
+            x.s.UpMbps, x.s.UpLossPct, x.s.UpJitterMs, x.s.DownMbps, x.s.DownLossPct, x.s.DownJitterMs,
+            x.s.RttMs, x.s.UpRetransBytes, x.s.DownRetransBytes, x.s.UpLostTotal, x.s.DownLostTotal)).ToList();
 
         return new StatSample
         {
             Time = DateTime.Now,
             ElapsedSec = (now - _startUs) / 1e6,
             IntervalSec = dt,
-            TxMbps = mixed ? u!.TxMbps + t!.TxMbps : p.TxMbps,
-            UpMbps = mixed ? Sum(u!.UpMbps, t!.UpMbps) : p.UpMbps,
-            UpLossPct = p.UpLossPct, UpJitterMs = p.UpJitterMs, UpMaxGapMs = p.UpMaxGapMs,
-            UpLostTotal = p.UpLostTotal, UpOutOfOrderTotal = p.UpOooTotal, UpLossTotalPct = p.UpLossTotalPct,
-            UpReportStale = p.UpStale || (t?.UpStale ?? false), UpReportAgeSec = p.UpAgeSec,
-            ServerTxMbps = mixed ? Sum(u!.ServerTxMbps, t!.ServerTxMbps) : p.ServerTxMbps,
-            DownMbps = mixed ? u!.DownMbps + t!.DownMbps : p.DownMbps,
-            DownLossPct = p.DownLossPct, DownJitterMs = p.DownJitterMs, DownMaxGapMs = p.DownMaxGapMs,
-            DownLostTotal = p.DownLostTotal, DownOutOfOrderTotal = p.DownOooTotal, DownLossTotalPct = p.DownLossTotalPct,
+            TxMbps = samples.Sum(x => x.s.TxMbps),
+            UpMbps = SumF(samples.Select(x => x.s.UpMbps)),
+            UpLossPct = upLoss, UpJitterMs = upJit, UpMaxGapMs = Max(samples.Select(x => x.s.UpMaxGapMs)),
+            UpLostTotal = upLostT, UpOutOfOrderTotal = quality.Sum(x => x.s.UpOooTotal),
+            UpLossTotalPct = upExpT > 0 ? Pct(upLostT, upExpT) : double.NaN,
+            UpReportStale = samples.Any(x => x.s.UpStale), UpReportAgeSec = Max(samples.Select(x => x.s.UpAgeSec)),
+            ServerTxMbps = SumF(samples.Select(x => x.s.ServerTxMbps)),
+            DownMbps = samples.Sum(x => x.s.DownMbps),
+            DownLossPct = dnLoss, DownJitterMs = double.IsFinite(dnJit) ? dnJit : 0,
+            DownMaxGapMs = Max(samples.Select(x => x.s.DownMaxGapMs)),
+            DownLostTotal = dnLostT, DownOutOfOrderTotal = quality.Sum(x => x.s.DownOooTotal), DownLossTotalPct = Pct(dnLostT, dnExpT),
             RttMs = p.RttMs, RttMinMs = p.RttMinMs, RttMaxMs = p.RttMaxMs,
-            UpRetransBytes = t?.UpRetransBytes ?? 0, DownRetransBytes = t?.DownRetransBytes ?? 0,
-            UpTimeoutsTotal = t?.UpTimeouts ?? 0, DownTimeoutsTotal = t?.DownTimeouts ?? 0,
+            UpRetransBytes = tcp.Sum(x => x.s.UpRetransBytes), DownRetransBytes = tcp.Sum(x => x.s.DownRetransBytes),
+            UpTimeoutsTotal = tcp.Sum(x => x.s.UpTimeouts), DownTimeoutsTotal = tcp.Sum(x => x.s.DownTimeouts),
             Mixed = mixed,
-            UpMbpsUdp = mixed ? u!.UpMbps : double.NaN, UpMbpsTcp = mixed ? t!.UpMbps : double.NaN,
-            DownMbpsUdp = mixed ? u!.DownMbps : double.NaN, DownMbpsTcp = mixed ? t!.DownMbps : double.NaN,
-            RttTcpMs = mixed ? t!.RttMs : double.NaN,
+            UpMbpsUdp = mixed ? SumF(udp.Select(x => x.s.UpMbps)) : double.NaN,
+            UpMbpsTcp = mixed ? SumF(tcp.Select(x => x.s.UpMbps)) : double.NaN,
+            DownMbpsUdp = mixed ? udp.Sum(x => x.s.DownMbps) : double.NaN,
+            DownMbpsTcp = mixed ? tcp.Sum(x => x.s.DownMbps) : double.NaN,
+            RttTcpMs = mixed ? tcp[0].s.RttMs : double.NaN,
+            Classes = classStats,
             Mos = StatSample.EstimateMos(double.IsFinite(p.RttMs) ? p.RttMs : p.SmoothedRttMs, worstJit, worstLoss),
         };
     }
@@ -407,11 +498,28 @@ public sealed class ClientSession : IDisposable
         double downDur = Math.Max(1e-3, ((_finalUs > 0 ? _finalUs : now) - _startUs) / 1e6);
         var sb = new StringBuilder();
         sb.AppendLine($"===== Summary ({dur:0} s, {Config}) =====");
-        bool mixed = _udpEng != null && _tcpEng != null;
-        if (_udpEng != null) AppendClass(sb, _udpEng, FinalServerReport, mixed ? " UDP" : "", dur, downDur, now);
-        if (_tcpEng != null) AppendClass(sb, _tcpEng, mixed ? FinalServerTcpReport : FinalServerReport, mixed ? " TCP" : "", dur, downDur, now);
-        if (_engineLag() > 0)
-            sb.AppendLine($"Note: client sender fell behind schedule {_engineLag()} time(s) - local CPU/NIC may be limiting.");
+        if (_classes.Count <= 2)
+        {
+            foreach (var c in _classes)
+                AppendClassDetail(sb, c, _classes.Count > 1 ? " " + c.Def.Transport.ToString().ToUpperInvariant() : "", dur, downDur, now);
+        }
+        else
+        {
+            sb.AppendLine($"{"Class",-20} {"DSCP",-10} {"Proto",-5} {"Up Mbps",8} {"Up loss",8} {"Down Mbps",9} {"Dn loss",8} {"Jitter dn",9} {"RTT",8}");
+            foreach (var c in _classes)
+            {
+                StatsReport? up = c.Final;
+                if (up == null && c.Eng.TryGetPeerReport(out var pr, out _)) up = pr;
+                var rx = c.Eng.Rx.Snapshot(now);
+                var rt = c.Eng.GetRttTotals();
+                string upM = up is StatsReport u ? $"{u.Bytes * 8 / dur / 1e6:0.00}" : "-";
+                string upL = up is StatsReport u2 ? $"{LossPct(u2):0.##}%" : "-";
+                sb.AppendLine($"{Trunc(c.Def.Name, 20),-20} {c.Def.DscpName,-10} {c.Def.Transport,-5} {upM,8} {upL,8} {rx.Bytes * 8 / downDur / 1e6,9:0.00} " +
+                              $"{LossPct(rx),7:0.##}% {rx.JitterUs / 1000,7:0.00}ms {(rt.Samples > 0 ? $"{rt.AvgUs / 1000:0.0}ms" : "-"),8}");
+            }
+        }
+        long lag = _classes.Sum(c => c.Eng.SenderLagEvents);
+        if (lag > 0) sb.AppendLine($"Note: client sender fell behind schedule {lag} time(s) - local CPU/NIC may be limiting.");
         foreach (var t in _tunnels)
         {
             var st = t.GetStatus(now);
@@ -421,23 +529,21 @@ public sealed class ClientSession : IDisposable
         }
         return sb.ToString().TrimEnd();
 
-        long _engineLag() => (_udpEng?.SenderLagEvents ?? 0) + (_tcpEng?.SenderLagEvents ?? 0);
+        static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
     }
 
-    static void AppendClass(StringBuilder sb, LinkEngine eng, StatsReport? final, string tag, double dur, double downDur, long now)
+    static double LossPct(StatsReport r) => r.UniquePackets() + r.Lost > 0 ? 100.0 * r.Lost / (r.UniquePackets() + r.Lost) : 0;
+
+    static void AppendClassDetail(StringBuilder sb, ClassRuntime c, string tag, double dur, double downDur, long now)
     {
-        StatsReport? up = final;
-        if (up == null && eng.TryGetPeerReport(out var p, out _)) up = p;
+        StatsReport? up = c.Final;
+        if (up == null && c.Eng.TryGetPeerReport(out var p, out _)) up = p;
         if (up is StatsReport u)
-        {
-            double loss = u.UniquePackets() + u.Lost > 0 ? 100.0 * u.Lost / (u.UniquePackets() + u.Lost) : 0;
-            sb.AppendLine($"Upload{tag,-4}  (client→server): {u.Bytes * 8 / dur / 1e6,8:0.00} Mbps avg, {u.Packets} pkts, lost {u.Lost} ({loss:0.###}%), out-of-order {u.OutOfOrder}, jitter {u.JitterUs / 1000:0.00} ms");
-        }
+            sb.AppendLine($"Upload{tag,-4}  (client→server): {u.Bytes * 8 / dur / 1e6,8:0.00} Mbps avg, {u.Packets} pkts, lost {u.Lost} ({LossPct(u):0.###}%), out-of-order {u.OutOfOrder}, jitter {u.JitterUs / 1000:0.00} ms");
         else sb.AppendLine($"Upload{tag,-4}  (client→server): no report received from server");
-        var rx = eng.Rx.Snapshot(now);
-        double dl = rx.UniquePackets() + rx.Lost > 0 ? 100.0 * rx.Lost / (rx.UniquePackets() + rx.Lost) : 0;
-        sb.AppendLine($"Download{tag,-4}(server→client): {rx.Bytes * 8 / downDur / 1e6,8:0.00} Mbps avg, {rx.Packets} pkts, lost {rx.Lost} ({dl:0.###}%), out-of-order {rx.OutOfOrder}, jitter {rx.JitterUs / 1000:0.00} ms");
-        var rt = eng.GetRttTotals();
+        var rx = c.Eng.Rx.Snapshot(now);
+        sb.AppendLine($"Download{tag,-4}(server→client): {rx.Bytes * 8 / downDur / 1e6,8:0.00} Mbps avg, {rx.Packets} pkts, lost {rx.Lost} ({LossPct(rx):0.###}%), out-of-order {rx.OutOfOrder}, jitter {rx.JitterUs / 1000:0.00} ms");
+        var rt = c.Eng.GetRttTotals();
         sb.AppendLine(rt.Samples > 0
             ? $"RTT{tag}: avg {rt.AvgUs / 1000:0.00} ms, min {rt.MinUs / 1000:0.00} ms, max {rt.MaxUs / 1000:0.00} ms ({rt.Samples} samples)"
             : $"RTT{tag}: no samples");
@@ -447,8 +553,12 @@ public sealed class ClientSession : IDisposable
     {
         try { _senderCts.Cancel(); } catch { }
         try { _cts.Cancel(); } catch { }
-        try { _udp?.Dispose(); } catch { }
-        foreach (var s in _streams) { try { s.Shutdown(SocketShutdown.Both); } catch { } try { s.Dispose(); } catch { } }
+        try { _probe?.Dispose(); } catch { }
+        foreach (var c in _classes)
+        {
+            try { c.Udp?.Dispose(); } catch { }
+            foreach (var s in c.Tcp) { try { s.Shutdown(SocketShutdown.Both); } catch { } try { s.Dispose(); } catch { } }
+        }
         try { _ctrl?.Dispose(); } catch { }
         try { _qos?.Dispose(); } catch { }
     }
@@ -461,21 +571,21 @@ public sealed class ClientSession : IDisposable
         Teardown();
     }
 
-    /// <summary>Per-interval figures for one engine (UDP or TCP).</summary>
+    /// <summary>Per-interval figures for one class.</summary>
     sealed class ClassSample
     {
-        public double TxMbps, UpMbps = double.NaN, UpLossPct = double.NaN, UpJitterMs = double.NaN, UpMaxGapMs = double.NaN, UpLossTotalPct = double.NaN;
-        public long UpLostTotal, UpOooTotal;
+        public double TxMbps, UpMbps = double.NaN, UpLossPct = double.NaN, UpJitterMs = double.NaN, UpMaxGapMs = double.NaN;
+        public long UpLostTotal, UpExpTotal, UpOooTotal, UpLostD, UpExpD;
         public bool UpStale = true;
         public double UpAgeSec = double.NaN, ServerTxMbps = double.NaN;
-        public double DownMbps, DownLossPct, DownJitterMs, DownMaxGapMs, DownLossTotalPct;
-        public long DownLostTotal, DownOooTotal;
+        public double DownMbps, DownLossPct, DownJitterMs, DownMaxGapMs;
+        public long DownLostTotal, DownExpTotal, DownOooTotal, DownLostD, DownExpD;
         public double RttMs, RttMinMs, RttMaxMs, SmoothedRttMs;
         public long UpRetransBytes, DownRetransBytes;
         public int UpTimeouts, DownTimeouts;
     }
 
-    /// <summary>Keeps the previous snapshot of one engine to turn cumulative counters into interval rates.</summary>
+    /// <summary>Keeps the previous snapshot of one engine to turn cumulative counters into interval figures.</summary>
     sealed class EngineMeter
     {
         readonly LinkEngine _e;
@@ -495,13 +605,13 @@ public sealed class ClientSession : IDisposable
 
             s.TxMbps = (tx - _prevTx) * 8 / dt / 1e6;
             s.DownMbps = (local.Bytes - _prevLocal.Bytes) * 8 / dt / 1e6;
-            long dUnique = local.UniquePackets() - _prevLocal.UniquePackets();
-            long dLost = Math.Max(0, local.Lost - _prevLocal.Lost);
-            s.DownLossPct = dUnique + dLost > 0 ? 100.0 * dLost / (dUnique + dLost) : 0;
-            s.DownLossTotalPct = local.UniquePackets() + local.Lost > 0 ? 100.0 * local.Lost / (local.UniquePackets() + local.Lost) : 0;
+            s.DownLostD = Math.Max(0, local.Lost - _prevLocal.Lost);
+            s.DownExpD = Math.Max(0, local.UniquePackets() - _prevLocal.UniquePackets()) + s.DownLostD;
+            s.DownLossPct = s.DownExpD > 0 ? 100.0 * s.DownLostD / s.DownExpD : 0;
+            s.DownLostTotal = local.Lost;
+            s.DownExpTotal = local.UniquePackets() + local.Lost;
             s.DownJitterMs = local.JitterUs / 1000;
             s.DownMaxGapMs = local.MaxGapUs / 1000.0;
-            s.DownLostTotal = local.Lost;
             s.DownOooTotal = local.OutOfOrder;
             s.RttMs = rtt.AvgUs / 1000; s.RttMinMs = rtt.MinUs / 1000; s.RttMaxMs = rtt.MaxUs / 1000;
             s.SmoothedRttMs = _e.SmoothedRttUs / 1000;
@@ -517,8 +627,9 @@ public sealed class ClientSession : IDisposable
             if (_e.TryGetPeerReport(out var peer, out long peerAt))
             {
                 s.UpAgeSec = (now - peerAt) / 1e6;
-                s.UpLostTotal = peer.Lost; s.UpOooTotal = peer.OutOfOrder;
-                s.UpLossTotalPct = peer.UniquePackets() + peer.Lost > 0 ? 100.0 * peer.Lost / (peer.UniquePackets() + peer.Lost) : 0;
+                s.UpLostTotal = peer.Lost;
+                s.UpExpTotal = peer.UniquePackets() + peer.Lost;
+                s.UpOooTotal = peer.OutOfOrder;
                 s.UpJitterMs = peer.JitterUs / 1000;
                 s.UpMaxGapMs = peer.MaxGapUs / 1000.0;
                 s.DownTimeouts = peer.TcpTimeouts;
@@ -528,9 +639,9 @@ public sealed class ClientSession : IDisposable
                     double pdt = (peer.TimeUs - _prevPeer.TimeUs) / 1e6;
                     s.UpMbps = (peer.Bytes - _prevPeer.Bytes) * 8 / pdt / 1e6;
                     s.ServerTxMbps = (peer.TxBytes - _prevPeer.TxBytes) * 8 / pdt / 1e6;
-                    long pu = peer.UniquePackets() - _prevPeer.UniquePackets();
-                    long pl = Math.Max(0, peer.Lost - _prevPeer.Lost);
-                    s.UpLossPct = pu + pl > 0 ? 100.0 * pl / (pu + pl) : 0;
+                    s.UpLostD = Math.Max(0, peer.Lost - _prevPeer.Lost);
+                    s.UpExpD = Math.Max(0, peer.UniquePackets() - _prevPeer.UniquePackets()) + s.UpLostD;
+                    s.UpLossPct = s.UpExpD > 0 ? 100.0 * s.UpLostD / s.UpExpD : 0;
                     s.DownRetransBytes = Math.Max(0, peer.TcpRetransBytes - _prevPeer.TcpRetransBytes);
                     _prevPeer = peer;
                 }

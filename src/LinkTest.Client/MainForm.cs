@@ -22,8 +22,9 @@ sealed class MainForm : Form
     readonly NumericUpDown _burstOn = Num(1, 60000, 0);
     readonly NumericUpDown _burstOff = Num(0, 60000, 0);
     readonly NumericUpDown _streams = Num(1, 16, 0);
+    const string DscpSimulateItem = "Simulate (enterprise mix)";
     readonly ComboBox _dscp = Combo("0 - Best effort", "46 - EF (voice)", "34 - AF41 (video)", "26 - AF31", "18 - AF21",
-                                     "10 - AF11", "48 - CS6 (network control)", "8 - CS1 (scavenger)");
+                                     "10 - AF11", "48 - CS6 (network control)", "8 - CS1 (scavenger)", DscpSimulateItem);
     readonly NumericUpDown _duration = Num(0, 864000, 0);
     readonly NumericUpDown _loss = Num(0, 100, 1);
     readonly CheckedListBox _tunnelList = new() { CheckOnClick = true, Height = 150, IntegralHeight = false };
@@ -47,6 +48,8 @@ sealed class MainForm : Form
     readonly LineChart _chartLat = new() { Title = "Latency", Unit = "ms", Dock = DockStyle.Fill };
     readonly LineChart _chartLoss = new() { Title = "Packet loss", Unit = "%", Dock = DockStyle.Fill, MinYMax = 1 };
     readonly ListView _tunnelView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
+    readonly ListView _classView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
+    readonly TabControl _bottomTabs = new() { Dock = DockStyle.Fill };
     readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
     readonly ToolStripStatusLabel _status = new() { Text = "Idle", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
@@ -97,6 +100,7 @@ sealed class MainForm : Form
         _stop.Click += async (_, _) => await StopAsync();
         _proto.SelectedIndexChanged += (_, _) => OnProtocolChanged();
         _profile.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
+        _dscp.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
         FormClosing += (_, _) => { SaveUiToSettings(); _session?.Dispose(); _csvLog?.Dispose(); };
     }
 
@@ -127,7 +131,11 @@ sealed class MainForm : Form
         Row(form, "Burst on (ms)", _burstOn, "Bursty profile: transmit period");
         Row(form, "Burst off (ms)", _burstOff, "Bursty profile: silent period");
         Row(form, "TCP streams", _streams, "Parallel TCP connections (rate is split between them)");
-        Row(form, "DSCP marking", _dscp, "QoS marking via Windows qWAVE. Requires running as Administrator; the network must also honour it.");
+        Row(form, "DSCP marking", _dscp, "QoS marking via Windows qWAVE. Requires running as Administrator, and only works between two machines (not to this PC itself).\n\n" +
+            "Simulate: runs a typical enterprise mix of 10 classes at once, each with its own DSCP, transport, traffic pattern and statistics:\n" +
+            "Voice EF 10% · Video conferencing AF41 18% · Network control CS6 2% · OAM CS2 1% (UDP)\n" +
+            "Call signaling CS3 2% · Streaming video AF31 12% · Transactional AF21 12% · Bulk AF11 12% · Best effort 30% · Scavenger CS1 1% (TCP)\n" +
+            "Protocol, profile, UDP share and TCP streams are set per class in this mode. See the Traffic classes tab while running.");
         Row(form, "Duration (s, 0 = ∞)", _duration, "Stop automatically after this many seconds. 0 runs until you press Stop - useful for long-term monitoring.");
         Row(form, "Artificial loss (%)", _loss, "Testing aid: the client randomly discards this percentage of packets in both directions, to see how the tunnels react.");
 
@@ -162,16 +170,25 @@ sealed class MainForm : Form
         form.Controls.Add(csvRow); form.SetColumnSpan(csvRow, 2);
         _inputs.Add(_csvFolder);
 
-        var buttons = new TableLayoutPanel { Dock = DockStyle.Top, Height = 48, ColumnCount = 2, Padding = new Padding(0, 8, 0, 0) };
+        left.Controls.Add(form);
+
+        // Start / Stop live in their own panel under the scrolling settings, so they are always visible.
+        var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
         buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _start.Font = new Font(Font, FontStyle.Bold);
         _start.BackColor = Color.FromArgb(0, 120, 212); _start.ForeColor = Color.White; _start.FlatStyle = FlatStyle.Flat;
+        _start.EnabledChanged += (_, _) => _start.BackColor = _start.Enabled ? Color.FromArgb(0, 120, 212) : Color.FromArgb(200, 205, 212);
         buttons.Controls.Add(_start);
         buttons.Controls.Add(_stop);
+        var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(10, 8, 10, 8), BackColor = Color.FromArgb(235, 238, 242) };
+        actionBar.Controls.Add(buttons);
 
-        left.Controls.Add(buttons);
-        left.Controls.Add(form);
+        var leftColumn = new Panel { Dock = DockStyle.Left, Width = 340 };
+        left.Dock = DockStyle.Fill;
+        leftColumn.Controls.Add(left);
+        leftColumn.Controls.Add(actionBar);
 
         // Right side
         var tiles = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4), WrapContents = true };
@@ -200,8 +217,20 @@ sealed class MainForm : Form
             _tunnelView.Columns.Add(name, (int)(w * DeviceDpi / 96f));   // column widths are not auto-scaled
         _tips.SetToolTip(_tunnelView, "Detect = avg time from last good probe to DOWN. Recover = avg outage duration until UP again.");
 
+        foreach (var (name, w) in new[] { ("Class", 170), ("DSCP", 85), ("Proto", 50), ("Share", 50), ("Up Mbps", 70), ("Up loss %", 70), ("Up jitter", 70),
+                                          ("Down Mbps", 75), ("Down loss %", 80), ("Down jitter", 75), ("RTT", 65), ("Lost ↑/↓", 90), ("TCP retrans KB ↑/↓", 120) })
+            _classView.Columns.Add(name, (int)(w * DeviceDpi / 96f));
+        _tips.SetToolTip(_classView, "Per traffic class. With DSCP marking honoured by the network, high-priority classes (EF, AF4x, CS6) should keep low loss and jitter under congestion while best effort / scavenger degrade first.");
+
+        var tunnelsTab = new TabPage("VPN tunnels");
+        tunnelsTab.Controls.Add(_tunnelView);
+        var classesTab = new TabPage("Traffic classes");
+        classesTab.Controls.Add(_classView);
+        _bottomTabs.TabPages.Add(tunnelsTab);
+        _bottomTabs.TabPages.Add(classesTab);
+
         var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
-        bottom.Panel1.Controls.Add(_tunnelView);
+        bottom.Panel1.Controls.Add(_bottomTabs);
         bottom.Panel2.Controls.Add(_log);
 
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
@@ -217,7 +246,7 @@ sealed class MainForm : Form
         strip.Items.Add(BuildVersionMenu());
 
         Controls.Add(right);
-        Controls.Add(left);
+        Controls.Add(leftColumn);
         Controls.Add(strip);
         Controls.Add(BuildUpdateBanner());
 
@@ -282,7 +311,8 @@ sealed class MainForm : Form
         _burstOn.Value = Math.Clamp(c.BurstOnMs, 1, 60000);
         _burstOff.Value = Math.Clamp(c.BurstOffMs, 0, 60000);
         _streams.Value = Math.Clamp(c.Streams, 1, 16);
-        _dscp.SelectedIndex = Math.Max(0, Enumerable.Range(0, _dscp.Items.Count).FirstOrDefault(i => ParseDscp(_dscp.Items[i]!.ToString()!) == c.Dscp));
+        _dscp.SelectedIndex = c.DscpSimulate ? _dscp.Items.IndexOf(DscpSimulateItem)
+            : Math.Max(0, Enumerable.Range(0, _dscp.Items.Count).FirstOrDefault(i => ParseDscp(_dscp.Items[i]!.ToString()!) == c.Dscp));
         _duration.Value = Math.Clamp(c.DurationSec, 0, 864000);
         _loss.Value = (decimal)Math.Clamp(_settings.ArtificialLossPct, 0, 100);
         _csv.Checked = _settings.CsvEnabled;
@@ -316,9 +346,12 @@ sealed class MainForm : Form
         BurstOnMs = (int)_burstOn.Value,
         BurstOffMs = (int)_burstOff.Value,
         Streams = (int)_streams.Value,
-        Dscp = ParseDscp(_dscp.SelectedItem?.ToString() ?? "0"),
+        Dscp = DscpSimulateSelected ? 0 : ParseDscp(_dscp.SelectedItem?.ToString() ?? "0"),
+        DscpSimulate = DscpSimulateSelected,
         DurationSec = (int)_duration.Value,
     };
+
+    bool DscpSimulateSelected => _dscp.SelectedItem as string == DscpSimulateItem;
 
     static int ParseDscp(string s) => int.TryParse(s.Split(' ')[0], out var v) ? v : 0;
 
@@ -335,11 +368,13 @@ sealed class MainForm : Form
         bool idle = _session == null;
         foreach (var c in _inputs) c.Enabled = idle;
         if (!idle) return;
-        _streams.Enabled = _proto.SelectedIndex >= 1;
-        _udpShare.Enabled = _proto.SelectedIndex == 2;
-        bool bursty = _profile.SelectedIndex == (int)TrafficProfile.Bursty;
+        bool sim = DscpSimulateSelected;   // classes define transport / profile / streams
+        _proto.Enabled = _profile.Enabled = !sim;
+        _streams.Enabled = !sim && _proto.SelectedIndex >= 1;
+        _udpShare.Enabled = !sim && _proto.SelectedIndex == 2;
+        bool bursty = !sim && _profile.SelectedIndex == (int)TrafficProfile.Bursty;
         _burstOn.Enabled = _burstOff.Enabled = bursty;
-        _size.Enabled = _profile.SelectedIndex != (int)TrafficProfile.Voip;
+        _size.Enabled = sim || _profile.SelectedIndex != (int)TrafficProfile.Voip;
     }
 
     void RefreshTunnelList()
@@ -428,6 +463,7 @@ sealed class MainForm : Form
         _stop.Enabled = true;
         _chartTput.Clear(); _chartLat.Clear(); _chartLoss.Clear();
         _tunnelView.Items.Clear();
+        _classView.Items.Clear();
         foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tTime }) t.Set("–");
         _status.Text = $"Connecting to {host}…";
 
@@ -468,6 +504,8 @@ sealed class MainForm : Form
         }
 
         foreach (var t in session.Tunnels) _tunnelView.Items.Add(new ListViewItem(new string[_tunnelView.Columns.Count]) { Text = t.Profile.Name });
+        foreach (var k in session.Classes) _classView.Items.Add(new ListViewItem(new string[_classView.Columns.Count]) { Text = k.Name });
+        if (session.Classes.Count > 2) _bottomTabs.SelectedIndex = 1;
         _status.Text = $"Connected to {session.ServerEndPoint} - {session.Config}";
         _timer.Start();
     }
@@ -525,6 +563,7 @@ sealed class MainForm : Form
         _chartLoss.Push(s.UpLossPct, s.DownLossPct);
 
         OnTickTunnels();
+        UpdateClassView(s);
         try { _csvLog?.Write(s, session.TunnelSummaryLine()); } catch { }
 
         if (session.Config.DurationSec > 0 && s.ElapsedSec >= session.Config.DurationSec)
@@ -563,6 +602,35 @@ sealed class MainForm : Form
             };
         }
         _tunnelView.EndUpdate();
+    }
+
+    void UpdateClassView(StatSample s)
+    {
+        _classView.BeginUpdate();
+        for (int i = 0; i < s.Classes.Count && i < _classView.Items.Count; i++)
+        {
+            var k = s.Classes[i];
+            bool udp = k.Transport == TransportKind.Udp;
+            string[] cells =
+            {
+                k.Name, DscpNames.Name(k.Dscp), udp ? "UDP" : "TCP", $"{k.SharePct:0.#}%",
+                Fmt(k.UpMbps, "0.00"), udp ? Fmt(k.UpLossPct, "0.00") : "–", Fmt(k.UpJitterMs, "0.00") + " ms",
+                Fmt(k.DownMbps, "0.00"), udp ? Fmt(k.DownLossPct, "0.00") : "–", Fmt(k.DownJitterMs, "0.00") + " ms",
+                Ms(k.RttMs), udp ? $"{k.UpLostTotal} / {k.DownLostTotal}" : "–",
+                udp ? "–" : $"{Kb(k.UpRetransBytes)} / {Kb(k.DownRetransBytes)}",
+            };
+            var it = _classView.Items[i];
+            for (int c = 0; c < cells.Length; c++)
+            {
+                if (c == 0) it.Text = cells[0];
+                else if (it.SubItems.Count > c) it.SubItems[c].Text = cells[c];
+                else it.SubItems.Add(cells[c]);
+            }
+            double loss = Math.Max(Z(k.UpLossPct), Z(k.DownLossPct));
+            it.BackColor = !udp ? (k.UpRetransBytes + k.DownRetransBytes > 0 ? Color.FromArgb(255, 244, 206) : Color.White)
+                : loss >= 3 ? Color.FromArgb(253, 231, 233) : loss >= 0.5 ? Color.FromArgb(255, 244, 206) : Color.FromArgb(223, 246, 221);
+        }
+        _classView.EndUpdate();
     }
 
     // ------------------------------------------------------------------ updates
