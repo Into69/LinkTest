@@ -20,6 +20,7 @@ sealed class TunnelEditForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowIcon = false;
+        Icon = MainForm.AppIcon;
 
         var grid = new PropertyGrid { Dock = DockStyle.Fill, SelectedObject = Profile, ToolbarVisible = false, PropertySort = PropertySort.Categorized };
         grid.PropertyValueChanged += (_, _) => grid.Refresh();   // refresh computed detection time

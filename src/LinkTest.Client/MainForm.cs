@@ -50,6 +50,15 @@ sealed class MainForm : Form
     readonly ToolStripStatusLabel _status = new() { Text = "Idle", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
 
+    /// <summary>The icon embedded in the exe (from app.ico), reused for windows.</summary>
+    internal static readonly Icon? AppIcon = LoadAppIcon();
+
+    static Icon? LoadAppIcon()
+    {
+        try { return Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? Application.ExecutablePath); }
+        catch { return null; }
+    }
+
     ClientSession? _session;
     CsvLogger? _csvLog;
     CancellationTokenSource? _connectCts;
@@ -61,6 +70,7 @@ sealed class MainForm : Form
         AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
         Text = "LinkTest Client - link quality & tunnel stability";
+        Icon = AppIcon;
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(1400, 880);
         MinimumSize = new Size(1000, 650);
