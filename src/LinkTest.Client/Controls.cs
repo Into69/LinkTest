@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 
@@ -22,11 +23,16 @@ sealed class LineChart : Control
         Font = new Font("Segoe UI", 8.25f);
     }
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string Title { get; set; } = "";
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string Unit { get; set; } = "";
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int Capacity { get; set; } = 300;
     /// <summary>The y axis never scales below this maximum.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public double MinYMax { get; set; } = 1;
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string ValueFormat { get; set; } = "0.##";
 
     public void AddSeries(string name, Color color) => _series.Add(new Series { Name = name, Color = color });

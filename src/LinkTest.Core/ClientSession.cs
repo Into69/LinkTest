@@ -227,7 +227,7 @@ public sealed class ClientSession : IDisposable
             IPAddress.TryParse(ipPart, out seenIp);
         }
         string nat = seenIp == null ? "Unknown (server older than 1.4)"
-            : local != null && Protocol.Normalize(local.Address).Equals(seenIp) ? "No NAT - the server sees this computer's own address"
+            : local != null && Protocol.Normalize(local.Address).Equals(seenIp) ? "No NAT - the server sees this device's own address"
             : "Behind NAT - the server sees a different (translated) address";
         var info = new ConnectionInfo($"{host} ({ServerEndPoint})", localStr, seenByServer, nat, null, null, false);
         SetConnection(info);
@@ -242,7 +242,7 @@ public sealed class ClientSession : IDisposable
                 IpInfo? pub = pubTask != null ? await pubTask : null;
                 var done = info with { SeenByServerInfo = seen, PublicInfo = pub, LookupComplete = true };
                 if (seen != null && pub != null && pub.Error == null && !seen.IsPublic && pub.Ip != seen.Ip)
-                    done = done with { NatStatus = $"Not applicable - the test runs over a private path ({seen.Scope}); this computer's internet address is {pub.Ip}" };
+                    done = done with { NatStatus = $"Not applicable - the test runs over a private path ({seen.Scope}); this device's internet address is {pub.Ip}" };
                 SetConnection(done);
                 Emit("Client IP: " + (pub != null ? pub.Summary : seen != null ? seen.Summary : localStr) +
                      (seenByServer != null ? $" | seen by server as {seenByServer}" : ""));
@@ -326,7 +326,7 @@ public sealed class ClientSession : IDisposable
             catch { }
         })
         { IsBackground = true, Name = name };
-        if (name.Contains("tx") || name == "tunnels") t.Priority = ThreadPriority.AboveNormal;
+        if (name.Contains("tx") || name == "tunnels") try { t.Priority = ThreadPriority.AboveNormal; } catch { /* not allowed on some platforms */ }
         if (isSender) _senderThreads.Add(t);
         t.Start();
     }

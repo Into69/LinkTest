@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LinkTest.Mobile</RootNamespace>
+    <AssemblyName>LinkTest.Mobile</AssemblyName>
+
+    <ApplicationTitle>LinkTest</ApplicationTitle>
+    <ApplicationId>io.github.into69.linktest</ApplicationId>
+    <!-- Display version follows the shared version; the Android version code must increase with every
+         release: major*10000 + minor*100 + patch (1.5.0 -> 10500). -->
+    <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
+    <ApplicationVersion>$([MSBuild]::Add($([MSBuild]::Add($([MSBuild]::Multiply($([System.Version]::Parse($(Version)).Major), 10000)), $([MSBuild]::Multiply($([System.Version]::Parse($(Version)).Minor), 100)))), $([System.Version]::Parse($(Version)).Build)))</ApplicationVersion>
+
+    <SupportedOSPlatformVersion>24.0</SupportedOSPlatformVersion>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- Release builds are signed with the key passed in by CI (see .github/workflows/release.yml). -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <MauiIcon Include="Resources\AppIcon\appicon.png" Color="#0B1E3A" ForegroundScale="0.7" />
+    <MauiSplashScreen Include="Resources\Splash\splash.png" Color="#0B1E3A" BaseSize="160,160" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LinkTest.Core\LinkTest.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -15,6 +15,8 @@ public sealed record UpdateChannel(string AssetName, string ExeName)
     public static readonly UpdateChannel Server = new("LinkTest-Server-win-x64.zip", "LinkTestServer.exe");
     public static readonly UpdateChannel Cli = new("LinkTest-Cli-win-x64.zip", "LinkTestCli.exe");
     public static readonly UpdateChannel ServerGui = new("LinkTest-ServerGui-win-x64.zip", "LinkTestServerGui.exe");
+    /// <summary>Android client: the APK is downloaded and handed to the system installer.</summary>
+    public static readonly UpdateChannel Android = new("LinkTest-Client-android.apk", "");
 }
 
 public sealed record UpdateInfo(Version Version, string Tag, string DownloadUrl, long Size, string? Sha256, string Notes, string PageUrl);
@@ -34,7 +36,8 @@ public static class Updater
     {
         get
         {
-            var v = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(0, 0, 0);
+            // All programs share one version (Directory.Build.props); the entry assembly is null on Android.
+            var v = typeof(Updater).Assembly.GetName().Version ?? new Version(0, 0, 0);
             return new Version(v.Major, v.Minor, Math.Max(0, v.Build));
         }
     }
@@ -101,7 +104,8 @@ public static class Updater
         resp.EnsureSuccessStatusCode();
         long total = resp.Content.Headers.ContentLength ?? info.Size;
 
-        string path = Path.Combine(Path.GetTempPath(), $"LinkTest-update-{info.Version}-{Guid.NewGuid():N}.zip");
+        string ext = Path.GetExtension(new Uri(info.DownloadUrl).AbsolutePath);
+        string path = Path.Combine(Path.GetTempPath(), $"LinkTest-update-{info.Version}-{Guid.NewGuid():N}{(ext.Length > 0 ? ext : ".zip")}");
         using (var sha = SHA256.Create())
         await using (var src = await resp.Content.ReadAsStreamAsync(timeout.Token))
         await using (var dst = File.Create(path))

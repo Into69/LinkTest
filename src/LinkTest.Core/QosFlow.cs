@@ -27,13 +27,15 @@ public sealed class QosFlow : IDisposable
     const int QOSSetOutgoingDSCPValue = 2;
 
     IntPtr _handle;
+    readonly bool _posix;
 
-    QosFlow(IntPtr h) => _handle = h;
+    QosFlow(IntPtr h, bool posix = false) { _handle = h; _posix = posix; }
 
     public static QosFlow? TryCreate(out string? error)
     {
         error = null;
-        if (!OperatingSystem.IsWindows()) { error = "DSCP marking is only implemented on Windows"; return null; }
+        // Linux / Android: the IP_TOS / IPV6_TCLASS socket options are honoured and need no privileges.
+        if (!OperatingSystem.IsWindows()) return new QosFlow(IntPtr.Zero, posix: true);
         try
         {
             var v = new QOS_VERSION { Major = 1, Minor = 0 };
@@ -48,6 +50,7 @@ public sealed class QosFlow : IDisposable
     public bool TryAdd(Socket s, IPEndPoint? dest, int dscp, out string? error)
     {
         error = null;
+        if (_posix) return TrySetTos(s, dscp, out error);
         try
         {
             byte[]? sa = null;
@@ -76,6 +79,23 @@ public sealed class QosFlow : IDisposable
             return true;
         }
         catch (Exception e) { error = e.Message; return false; }
+    }
+
+    /// <summary>Linux / Android marking: DSCP goes in the upper six bits of the TOS / traffic-class byte.</summary>
+    static bool TrySetTos(Socket s, int dscp, out string? error)
+    {
+        error = null;
+        try
+        {
+            Span<byte> v = stackalloc byte[4];
+            BitConverter.TryWriteBytes(v, dscp << 2);
+            if (s.AddressFamily == AddressFamily.InterNetworkV6)
+                s.SetRawSocketOption(41 /* IPPROTO_IPV6 */, 67 /* IPV6_TCLASS */, v);
+            else
+                s.SetRawSocketOption(0 /* IPPROTO_IP */, 1 /* IP_TOS */, v);
+            return true;
+        }
+        catch (Exception e) { error = "setting IP TOS failed: " + e.Message; return false; }
     }
 
     public void Dispose()

@@ -1,11 +1,15 @@
-# Builds self-contained single-file exes and publishes them as a GitHub Release when a version tag is pushed:
-#   git tag v1.2.0 && git push origin v1.2.0
+# Builds the Windows programs (self-contained single-file exes) and the Android client APK, and publishes
+# them as a GitHub Release when a version tag is pushed:
+#   git tag v1.5.0 && git push origin v1.5.0
+# Running the workflow manually (Actions tab > release > Run workflow) builds everything without publishing;
+# the files are attached to the run as an artifact.
 # The programs' built-in updater looks for these assets on the latest release.
 name: release
 
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,12 +22,25 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
-      - name: Publish
+      - uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+
+      - name: Version
+        id: ver
         shell: pwsh
         run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $v = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "Building version $v"
+
+      - name: Publish Windows programs
+        shell: pwsh
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
           $apps = @(
             @{ Project = 'src/LinkTest.Client'; Asset = 'LinkTest-Client-win-x64.zip' },
             @{ Project = 'src/LinkTest.Server'; Asset = 'LinkTest-Server-win-x64.zip' },
@@ -40,11 +57,49 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "publish failed for $($a.Project)" }
             Compress-Archive -Path "$out/*" -DestinationPath "dist/$($a.Asset)" -Force
           }
+
+      - name: Install .NET Android workload
+        run: dotnet workload install maui-android
+
+      - name: Build Android APK
+        shell: pwsh
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          $version = '${{ steps.ver.outputs.version }}'
+          $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+          $sdkmanager = Get-ChildItem "$sdk\cmdline-tools" -Recurse -Filter sdkmanager.bat | Select-Object -First 1 -ExpandProperty FullName
+          "y`ny`ny`n" | & $sdkmanager --sdk_root=$sdk "platforms;android-36" "build-tools;36.0.0" | Select-Object -Last 2
+          $sign = @()
+          if ($env:KEYSTORE_B64) {
+            $ks = Join-Path $env:RUNNER_TEMP 'release.keystore'
+            [IO.File]::WriteAllBytes($ks, [Convert]::FromBase64String($env:KEYSTORE_B64))
+            $sign = @('-p:AndroidKeyStore=true', "-p:AndroidSigningKeyStore=$ks", "-p:AndroidSigningKeyAlias=$env:KEY_ALIAS",
+                      "-p:AndroidSigningKeyPass=$env:KEYSTORE_PASS", "-p:AndroidSigningStorePass=$env:KEYSTORE_PASS")
+          } else {
+            Write-Warning 'ANDROID_KEYSTORE_* secrets not set - APK is debug-signed and cannot update a release-signed install.'
+          }
+          dotnet publish src/LinkTest.Mobile -c Release -f net10.0-android -p:Version=$version `
+            "-p:AndroidSdkDirectory=$sdk" "-p:JavaSdkDirectory=$env:JAVA_HOME" @sign -o publish/android
+          if ($LASTEXITCODE -ne 0) { throw 'Android publish failed' }
+          $apk = Get-ChildItem publish/android -Filter '*-Signed.apk' | Select-Object -First 1
+          if (-not $apk) { throw 'signed APK not found' }
+          Copy-Item $apk.FullName dist/LinkTest-Client-android.apk
           Get-ChildItem dist | Format-Table Name, Length
 
+      - name: Upload build (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linktest-${{ steps.ver.outputs.version }}
+          path: dist/*
+
       - name: Create release
+        if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' dist/*.zip --title 'LinkTest ${{ github.ref_name }}' --generate-notes
+          gh release create '${{ github.ref_name }}' dist/* --title 'LinkTest ${{ github.ref_name }}' --generate-notes

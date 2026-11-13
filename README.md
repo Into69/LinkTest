@@ -10,10 +10,16 @@ different **VPN tunnel types** would behave on the link: would they drop, and wo
 | `LinkTestServerGui.exe` | The same server with a window. It has settings, start/stop, live test sessions, the log, a button that adds firewall rules, and updates. |
 | `LinkTestClient.exe` | Windows GUI client. Choose the server, the rates and the traffic type, then watch live stats. |
 | `LinkTestCli.exe` | Headless client with the same engine, for scripting and long-term monitoring. |
+| `LinkTest-Client-android.apk` | Android client (Android 7.0+): the same tests, tunnel simulations, traffic classes and IP lookup on a phone. |
 
 ## Build
 
-Requires the .NET 8 SDK.
+Requires the .NET 10 SDK. To build the Android app (`src/LinkTest.Mobile`) you also need:
+- the MAUI Android workload: `dotnet workload install maui-android`
+- JDK 17
+- the Android SDK with platform 36
+
+Without them, build the Windows projects individually instead of the whole solution.
 
 ```powershell
 dotnet build -c Release
@@ -83,6 +89,24 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
 - **CSV logging**: writes one row per second.
 
 **CLI**: `LinkTestCli.exe server.example.com --udp --up 20 --down 50 --profile voip --time 0 --tunnels all --csv log.csv`
+
+## Android
+
+Install `LinkTest-Client-android.apk` from the latest release. Android asks you to allow installing apps
+from your browser or file manager the first time. Then:
+
+- **Live** tab: tiles, charts, and an artificial-loss slider that works while a test runs.
+- **Settings** tab: server, traffic, DSCP (including Simulate) and tunnel options.
+- **Details** tab: tunnels, traffic classes, and connection and IP information.
+- **START / STOP** is in the top bar, so it is available from every tab.
+
+DSCP marking works without special permissions on Android. The screen stays on during a test (this can be
+turned off in Settings), because Android may pause apps that are in the background.
+
+**Updates:** the app checks GitHub, downloads the new APK and opens the Android installer; you confirm the
+install. Every release APK is signed with the same release key, which is stored in the repository secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`. Without that key, installed
+copies cannot be updated.
 
 ## Updates
 
