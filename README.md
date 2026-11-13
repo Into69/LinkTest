@@ -90,6 +90,32 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
 
 **CLI**: `LinkTestCli.exe server.example.com --udp --up 20 --down 50 --profile voip --time 0 --tunnels all --csv log.csv`
 
+## Diagnostics
+
+- **Path MTU:** when a test starts, the client finds the largest packet that gets through unfragmented in
+  each direction, using don't-fragment probes.
+  - It recommends a tunnel MTU and TCP MSS for common VPN types: WireGuard, IPsec ESP (AES-GCM and
+    AES-CBC/SHA1, with NAT-T), OpenVPN UDP and GRE.
+  - Results appear on the *Path* tab.
+  - Turn it off in Settings, or with `--no-mtu` in the CLI.
+- **Bufferbloat:** the first few seconds of a test carry heartbeats only (*Idle baseline*, 3 s by default).
+  - The idle round-trip time is then compared with the round-trip time under load.
+  - The grade runs from A+ (under 5 ms extra) through A, B, C and D to F (400 ms or more extra).
+- **Traceroute:** an MTR-style trace to the server, with loss and RTT per hop. It runs at the start and again
+  when loss of 2% or more, a stall of 1 s or more, or a tunnel drop appears (at most once a minute).
+  - The trace names the hop where loss starts and persists to the end of the path.
+  - Loss on a single hop that doesn't continue to later hops is usually ICMP rate limiting, not real loss.
+  - Many servers block ping, so the last hop may not answer.
+
+## Development
+
+- `dotnet test tests/LinkTest.Tests` runs about 50 unit and end-to-end tests. The end-to-end tests start a
+  real server in-process.
+- `.github/workflows/ci.yml` builds and runs the tests on every push and pull request.
+- The release workflow runs the tests before it publishes anything.
+- To release: add a section for the new version to `CHANGELOG.md` (it becomes the release notes), bump
+  `<Version>` in `Directory.Build.props`, then push a `vX.Y.Z` tag.
+
 ## Android
 
 Install `LinkTest-Client-android.apk` from the latest release. Android asks you to allow installing apps

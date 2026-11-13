@@ -7,6 +7,8 @@ public sealed class SenderSpec
     public int PacketSize;
     public int BurstOnMs;
     public int BurstOffMs;
+    /// <summary>Delay before shaped traffic starts (idle baseline); heartbeats are sent meanwhile.</summary>
+    public long StartDelayUs;
 
     public static SenderSpec From(TestConfig c, double mbps) => new()
     {

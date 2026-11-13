@@ -89,6 +89,8 @@ public sealed class ServerSession : IDisposable
 
             var cfg = hello.Config ?? new TestConfig();
             cfg.Normalize();
+            // Clients before 1.6 do not know about the idle baseline (their configs default to it).
+            if (!Updater.TryParseVersion(hello.AppVersion ?? "0", out var cv) || cv < new Version(1, 6, 0)) cfg.BaselineSec = 0;
             string? note = null;
             double cap = _host.Options.MaxMbps;
             if (cfg.UpMbps > cap || cfg.DownMbps > cap)

@@ -15,6 +15,7 @@ public sealed class ServerHost
     readonly ConcurrentDictionary<uint, ServerSession> _sessions = new();
     Socket _listener = null!;
     Socket _udp = null!;
+    Socket? _udpDf;          // separate don't-fragment socket for downstream path-MTU probes
     volatile bool _stopping;
     static readonly object ConsoleLock = new();
 
@@ -43,6 +44,7 @@ public sealed class ServerHost
     public async Task RunAsync(CancellationToken ct)
     {
         (_listener, _udp) = CreateSockets();
+        _udpDf = CreateDfSocket();
         Log($"LinkTest server {Updater.CurrentVersion} listening on TCP+UDP port {_opts.Port}" +
             (_opts.Key != null ? " (key required)" : "") + $", cap {_opts.MaxMbps} Mbps/direction, max {_opts.MaxSessions} sessions");
         foreach (var a in LocalAddresses()) Log($"  local address: {a}");
@@ -69,7 +71,24 @@ public sealed class ServerHost
             foreach (var s in _sessions.Values) s.Dispose();
             _listener.Dispose();
             _udp.Dispose();
+            _udpDf?.Dispose();
         }
+    }
+
+    Socket? CreateDfSocket()
+    {
+        try
+        {
+            var s = new Socket(_udp.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            if (s.AddressFamily == AddressFamily.InterNetworkV6) s.DualMode = true;
+            var local = (IPEndPoint)_udp.LocalEndPoint!;
+            s.Bind(new IPEndPoint(local.Address, 0));
+            Protocol.DisableUdpConnReset(s);
+            if (Protocol.SetDontFragment(s)) return s;
+            s.Dispose();
+        }
+        catch (Exception e) { Log("Path-MTU test unavailable: " + e.Message); }
+        return null;
     }
 
     (Socket tcp, Socket udp) CreateSockets()
@@ -222,6 +241,30 @@ public sealed class ServerHost
                     buf[3] = (byte)PacketType.ProbeResp;
                     SendUdp(buf, n, ep);
                     break;
+                case PacketType.MtuProbe:
+                {
+                    // Header-only acknowledgement that reports how many bytes arrived.
+                    var ack = h;
+                    ack.Type = PacketType.MtuAck;
+                    ack.StreamId = (ushort)Math.Min(n, ushort.MaxValue);
+                    ack.Length = Protocol.HeaderSize;
+                    ack.Write(buf);
+                    SendUdp(buf, Protocol.HeaderSize, ep);
+                    break;
+                }
+                case PacketType.MtuRequest:
+                {
+                    if (_udpDf == null) break;
+                    int size = Math.Clamp((int)h.StreamId, Protocol.HeaderSize, PathMtu.MaxProbePayload);
+                    var down = new byte[size];
+                    var dh = h;
+                    dh.Type = PacketType.MtuDown;
+                    dh.Length = size;
+                    dh.Write(down);
+                    try { _udpDf.SendTo(down, 0, size, SocketFlags.None, ep); }
+                    catch (SocketException) { }      // bigger than this server's interface MTU: the probe fails, as it should
+                    break;
+                }
             }
         }
     }

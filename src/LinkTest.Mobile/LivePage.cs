@@ -9,7 +9,7 @@ sealed class LivePage : ContentPage
     readonly Label _status = new() { FontSize = 12, TextColor = Ui.Muted };
     readonly Tile _up = new("Upload (client→server)"), _down = new("Download (server→client)"), _rtt = new("Round-trip time"),
         _jitter = new("Jitter ↑ / ↓ (ms)"), _loss = new("Loss ↑ / ↓ (%)"), _gap = new("Longest gap ↑ / ↓"),
-        _retrans = new("TCP retransmits ↑ / ↓"), _mos = new("VoIP MOS (est.)"), _time = new("Elapsed");
+        _retrans = new("TCP retransmits ↑ / ↓"), _mos = new("VoIP MOS (est.)"), _bloat = new("Bufferbloat"), _time = new("Elapsed");
     readonly ChartDrawable _tput = new() { Title = "Throughput", Unit = "Mbps" };
     readonly ChartDrawable _lat = new() { Title = "Latency", Unit = "ms" };
     readonly ChartDrawable _lossChart = new() { Title = "Packet loss", Unit = "%" };
@@ -35,7 +35,7 @@ sealed class LivePage : ContentPage
         _lossView = new GraphicsView { Drawable = _lossChart, HeightRequest = 150 };
 
         var tiles = new Grid { ColumnDefinitions = { new(GridLength.Star), new(GridLength.Star) }, ColumnSpacing = 6, RowSpacing = 6 };
-        Tile[] all = { _up, _down, _rtt, _jitter, _loss, _gap, _retrans, _mos, _time };
+        Tile[] all = { _up, _down, _rtt, _jitter, _loss, _gap, _retrans, _mos, _bloat, _time };
         for (int i = 0; i < all.Length; i++)
         {
             if (i % 2 == 0) tiles.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
@@ -83,7 +83,7 @@ sealed class LivePage : ContentPage
         if (_app.Connecting)
         {
             _tput.Clear(); _lat.Clear(); _lossChart.Clear();
-            foreach (var t in new[] { _up, _down, _rtt, _jitter, _loss, _gap, _retrans, _mos, _time }) t.Set("–");
+            foreach (var t in new[] { _up, _down, _rtt, _jitter, _loss, _gap, _retrans, _mos, _bloat, _time }) t.Set("–");
             Invalidate();
         }
     }
@@ -101,6 +101,10 @@ sealed class LivePage : ContentPage
         _gap.Set($"{Ui.Fmt(s.UpMaxGapMs, "0")} / {Ui.Fmt(s.DownMaxGapMs, "0")}", "ms", Ui.Level(Math.Max(Ui.Z(s.UpMaxGapMs), s.DownMaxGapMs), 250, 1000));
         _retrans.Set(cfg?.UsesTcp == true ? $"{s.UpRetransBytes / 1024.0:0.#} / {s.DownRetransBytes / 1024.0:0.#}" : "n/a", cfg?.UsesTcp == true ? "KB/s" : "UDP only");
         _mos.Set(Ui.Fmt(s.Mos, "0.0"), "", s.Mos >= 4 ? Ui.Good : s.Mos >= 3.6 ? Ui.Warn : Ui.Bad);
+        if (s.BaselinePhase) _bloat.Set("…", "measuring idle RTT");
+        else if (s.BloatGrade != null)
+            _bloat.Set(s.BloatGrade, $"+{s.BloatIncreaseMs:0.0} ms under load", s.BloatGrade is "A+" or "A" ? Ui.Good : s.BloatGrade is "B" or "C" ? Ui.Warn : Ui.Bad);
+        else _bloat.Set("–", cfg?.BaselineSec == 0 ? "off / server < 1.6" : "measuring…");
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
         _time.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", cfg?.DurationSec > 0 ? $"of {cfg.DurationSec} s" : "until stopped");
 

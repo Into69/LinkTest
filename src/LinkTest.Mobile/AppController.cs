@@ -15,6 +15,8 @@ sealed class MobileSettings
     public bool IpLookup { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
     public bool KeepScreenOn { get; set; } = true;
+    public bool MeasureMtu { get; set; } = true;
+    public bool AutoTraceroute { get; set; } = true;
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
 
     static string FilePath => Path.Combine(FileSystem.AppDataDirectory, "settings.json");
@@ -61,6 +63,11 @@ sealed class AppController
     public event Action<StatSample>? Sampled;
     public event Action<string>? LogAdded;
     public event Action<ConnectionInfo>? ConnectionChanged;
+    /// <summary>Path MTU or a traceroute result arrived.</summary>
+    public event Action? PathChanged;
+    public MtuResult? Mtu { get; private set; }
+    public IReadOnlyList<TraceResult> Traces => _traces;
+    readonly List<TraceResult> _traces = new();
 
     readonly List<string> _log = new();
     IDispatcherTimer? _timer;
@@ -98,6 +105,12 @@ sealed class AppController
         session.Log += m => OnUi(() => Log(m));
         session.Ended += r => OnUi(() => OnEnded(session, r));
         session.ConnectionChanged += c => OnUi(() => { Connection = c; ConnectionChanged?.Invoke(c); });
+        session.MtuMeasured += m => OnUi(() => { Mtu = m; PathChanged?.Invoke(); });
+        session.TraceCompleted += t => OnUi(() => { _traces.Add(t); if (_traces.Count > 10) _traces.RemoveAt(0); PathChanged?.Invoke(); });
+        session.MeasureMtu = st.MeasureMtu;
+        session.AutoTraceroute = st.AutoTraceroute;
+        Mtu = null;
+        _traces.Clear();
         Connecting = true;
         LastSample = null;
         Connection = null;

@@ -52,6 +52,15 @@ public sealed class StatSample
     /// <summary>Mixed mode: RTT measured on the TCP streams (includes TCP queueing).</summary>
     public double RttTcpMs { get; init; } = double.NaN;
 
+    // Bufferbloat (1.6+): idle RTT from the baseline phase vs RTT under load.
+    /// <summary>True during the idle baseline at the start of the test (heartbeats only).</summary>
+    public bool BaselinePhase { get; init; }
+    public double IdleRttMs { get; init; } = double.NaN;
+    public double LoadedRttMs { get; init; } = double.NaN;
+    /// <summary>A+ … F, or null while not yet known.</summary>
+    public string? BloatGrade { get; init; }
+    public double BloatIncreaseMs => double.IsFinite(IdleRttMs) && double.IsFinite(LoadedRttMs) ? Math.Max(0, LoadedRttMs - IdleRttMs) : double.NaN;
+
     /// <summary>Per traffic class figures (one entry per class, in class order).</summary>
     public IReadOnlyList<ClassStat> Classes { get; init; } = Array.Empty<ClassStat>();
 
@@ -91,7 +100,7 @@ public sealed class CsvLogger : IDisposable
         _w.WriteLine("time,elapsed_s,tx_mbps,up_mbps,up_loss_pct,up_jitter_ms,up_max_gap_ms,up_lost_total,up_report_stale," +
                      "down_mbps,down_loss_pct,down_jitter_ms,down_max_gap_ms,down_lost_total," +
                      "rtt_ms,rtt_min_ms,rtt_max_ms,up_retrans_bytes,down_retrans_bytes,mos," +
-                     "up_udp_mbps,up_tcp_mbps,down_udp_mbps,down_tcp_mbps,rtt_tcp_ms,tunnels");
+                     "up_udp_mbps,up_tcp_mbps,down_udp_mbps,down_tcp_mbps,rtt_tcp_ms,idle_rtt_ms,loaded_rtt_ms,bloat_grade,tunnels");
     }
 
     public string Path { get; }
@@ -105,6 +114,7 @@ public sealed class CsvLogger : IDisposable
             F(s.DownMbps), F(s.DownLossPct), F(s.DownJitterMs), F(s.DownMaxGapMs), s.DownLostTotal,
             F(s.RttMs), F(s.RttMinMs), F(s.RttMaxMs), s.UpRetransBytes, s.DownRetransBytes, F(s.Mos),
             F(s.UpMbpsUdp), F(s.UpMbpsTcp), F(s.DownMbpsUdp), F(s.DownMbpsTcp), F(s.RttTcpMs),
+            F(s.IdleRttMs), F(s.LoadedRttMs), s.BloatGrade ?? "",
             "\"" + tunnelStates.Replace("\"", "'") + "\""));
     }
 

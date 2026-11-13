@@ -55,6 +55,11 @@ public sealed class TestConfig
     public List<TrafficClass>? Classes { get; set; }
     /// <summary>0 = run until stopped.</summary>
     public int DurationSec { get; set; }
+    /// <summary>
+    /// Seconds at the start with heartbeats only, to measure the idle RTT for the bufferbloat grade (1.6+).
+    /// The server ignores it for clients older than 1.6.
+    /// </summary>
+    public int BaselineSec { get; set; } = 3;
 
     public TestConfig Clone()
     {
@@ -78,6 +83,7 @@ public sealed class TestConfig
         UdpSharePct = double.IsFinite(UdpSharePct) ? Math.Clamp(UdpSharePct, 0, 100) : 30;
         Dscp = Math.Clamp(Dscp, 0, 63);
         DurationSec = Math.Max(0, DurationSec);
+        BaselineSec = Math.Clamp(BaselineSec, 0, 60);
         Classes = DscpSimulate ? TrafficClasses.Resolve(this) : null;   // echoed back by the server
     }
 

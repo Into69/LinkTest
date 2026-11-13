@@ -26,6 +26,24 @@ public sealed class ClientSession : IDisposable
     public IReadOnlyList<TrafficClass> Classes => _classes.Select(c => c.Def).ToList();
     public bool IsRunning => _running && !_stopping;
 
+    /// <summary>Measure the path MTU (both directions) when the test starts. Needs a 1.6+ server.</summary>
+    public bool MeasureMtu { get; set; } = true;
+    /// <summary>Run a traceroute at the start and whenever loss, stalls or tunnel drops appear (max once a minute).</summary>
+    public bool AutoTraceroute { get; set; } = true;
+    /// <summary>Interval loss (%) in either direction that triggers a traceroute.</summary>
+    public double TraceLossThresholdPct { get; set; } = 2;
+
+    public MtuResult? Mtu { get; private set; }
+    public event Action<MtuResult>? MtuMeasured;
+    public IReadOnlyList<TraceResult> Traces { get { lock (_traces) return _traces.ToList(); } }
+    public event Action<TraceResult>? TraceCompleted;
+
+    readonly List<TraceResult> _traces = new();
+    readonly BufferbloatMeter _bloat = new();
+    Version _serverVersion = new(0, 0, 0);
+    int _tracing;
+    long _lastTraceUs;
+
     /// <summary>Addresses and IP-lookup results for this connection (updated as lookups complete).</summary>
     public ConnectionInfo? Connection { get; private set; }
     /// <summary>Raised (from a background thread) whenever <see cref="Connection"/> changes.</summary>
@@ -121,6 +139,13 @@ public sealed class ClientSession : IDisposable
 
             SessionId = welcome.SessionId;
             Config = welcome.Config ?? config;
+            Updater.TryParseVersion(welcome.AppVersion ?? "0", out _serverVersion);
+            if (_serverVersion < new Version(1, 6, 0))
+            {
+                // Older servers don't pause their downstream for the idle baseline, nor answer MTU probes.
+                Config.BaselineSec = 0;
+                if (MeasureMtu) Emit($"Path-MTU test and bufferbloat grade need a 1.6+ server (server is {(welcome.AppVersion ?? "older than 1.4")}).");
+            }
             if (!string.IsNullOrEmpty(welcome.Message)) Emit("Server: " + welcome.Message);
             _lossPct = Math.Clamp(artificialLossPct, 0, 100);
             StartConnectionLookup(host, ctrlSock.LocalEndPoint as IPEndPoint, welcome.ClientAddress, ipLookup);
@@ -197,10 +222,17 @@ public sealed class ClientSession : IDisposable
             foreach (var p in tunnels.Where(t => t.Enabled))
             {
                 var sim = new TunnelSim(ti++, p, SendProbe);
-                sim.Event += (s, e) => Emit($"[{s.Profile.Name}] {e}");
+                sim.Event += (s, e) =>
+                {
+                    Emit($"[{s.Profile.Name}] {e}");
+                    if (e.StartsWith("DOWN", StringComparison.Ordinal)) MaybeTrace($"{s.Profile.Name} dropped");
+                };
                 _tunnels.Add(sim);
             }
             if (_tunnels.Count > 0) StartThread("tunnels", TunnelLoop, isSender: true);
+
+            if (MeasureMtu && _serverVersion >= new Version(1, 6, 0)) _ = Task.Run(RunMtuTestAsync);
+            if (AutoTraceroute) _ = Task.Run(async () => { await Task.Delay(1500, _cts.Token); MaybeTrace("start (baseline)", force: true); });
 
             Emit($"Test running (session {SessionId:X8}): {Config}" + (artificialLossPct > 0 ? $", artificial loss {artificialLossPct}%" : ""));
             if (_classes.Count > 2)
@@ -468,6 +500,9 @@ public sealed class ClientSession : IDisposable
         // Quality figures come from UDP (TCP hides loss by retransmitting); the first UDP class is the headline.
         var quality = udp.Count > 0 ? udp : tcp;
         var p = quality[0].s;
+        double elapsed = (now - _startUs) / 1e6;
+        _bloat.Add(elapsed, Config.BaselineSec, p.RttMs);
+        bool loaded = Config.UpMbps + Config.DownMbps > 0;
         bool mixed = udp.Count > 0 && tcp.Count > 0;
 
         static double SumF(IEnumerable<double> v) { double t = 0; foreach (var x in v) { if (!double.IsFinite(x)) return double.NaN; t += x; } return t; }
@@ -491,7 +526,7 @@ public sealed class ClientSession : IDisposable
             x.s.UpMbps, x.s.UpLossPct, x.s.UpJitterMs, x.s.DownMbps, x.s.DownLossPct, x.s.DownJitterMs,
             x.s.RttMs, x.s.UpRetransBytes, x.s.DownRetransBytes, x.s.UpLostTotal, x.s.DownLostTotal)).ToList();
 
-        return new StatSample
+        var sample = new StatSample
         {
             Time = DateTime.Now,
             ElapsedSec = (now - _startUs) / 1e6,
@@ -517,8 +552,72 @@ public sealed class ClientSession : IDisposable
             DownMbpsTcp = mixed ? tcp.Sum(x => x.s.DownMbps) : double.NaN,
             RttTcpMs = mixed ? tcp[0].s.RttMs : double.NaN,
             Classes = classStats,
+            BaselinePhase = Config.BaselineSec > 0 && elapsed <= Config.BaselineSec,
+            IdleRttMs = _bloat.IdleMs,
+            LoadedRttMs = loaded ? _bloat.LoadedMs : double.NaN,
+            BloatGrade = loaded ? _bloat.CurrentGrade : null,
             Mos = StatSample.EstimateMos(double.IsFinite(p.RttMs) ? p.RttMs : p.SmoothedRttMs, worstJit, worstLoss),
         };
+
+        // Trouble triggers a traceroute (rate limited inside MaybeTrace).
+        if (elapsed > 3)
+        {
+            double worst = Math.Max(Ui0(sample.UpLossPct), sample.DownLossPct);
+            double gap = Math.Max(Ui0(sample.UpMaxGapMs), Ui0(sample.DownMaxGapMs));
+            if (worst >= TraceLossThresholdPct) MaybeTrace($"loss {worst:0.#}%");
+            else if (gap >= 1000) MaybeTrace($"{gap / 1000:0.0} s stall");
+        }
+        return sample;
+
+        static double Ui0(double v) => double.IsFinite(v) ? v : 0;
+    }
+
+    async Task RunMtuTestAsync()
+    {
+        try
+        {
+            await Task.Delay(500, _cts.Token);
+            var server = new IPEndPoint(ServerEndPoint!.Address, ((IPEndPoint)_probe!.RemoteEndPoint!).Port);
+            double rtt = _classes.Count > 0 ? _classes[0].Eng.SmoothedRttUs / 1000 : double.NaN;
+            var r = await PathMtu.MeasureAsync(server, SessionId, rtt > 0 ? rtt : double.NaN, _cts.Token);
+            Mtu = r;
+            Emit(r.Summary);
+            if (r.Ok)
+            {
+                var best = VpnOverhead.All.Select(v => $"{v.Name.Split(' ')[0]} {v.TunnelMtu(r.PathMtu, r.Ipv6)}").Distinct();
+                Emit("  recommended tunnel MTU: " + string.Join(", ", best));
+            }
+            MtuMeasured?.Invoke(r);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { Emit("MTU test failed: " + e.Message); }
+    }
+
+    /// <summary>Starts a traceroute to the server unless one ran in the last minute (or is running).</summary>
+    void MaybeTrace(string reason, bool force = false)
+    {
+        if (!AutoTraceroute || _stopping || ServerEndPoint == null) return;
+        long now = Clock.NowUs;
+        if (!force && now - Interlocked.Read(ref _lastTraceUs) < 60_000_000) return;
+        if (Interlocked.Exchange(ref _tracing, 1) == 1) return;
+        Interlocked.Exchange(ref _lastTraceUs, now);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var r = await PathTracer.TraceAsync(ServerEndPoint.Address, reason, ct: _cts.Token);
+                lock (_traces)
+                {
+                    _traces.Add(r);
+                    if (_traces.Count > 20) _traces.RemoveAt(0);
+                }
+                Emit(r.Summary);
+                TraceCompleted?.Invoke(r);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception e) { Emit("Traceroute failed: " + e.Message); }
+            finally { Interlocked.Exchange(ref _tracing, 0); Interlocked.Exchange(ref _lastTraceUs, Clock.NowUs); }
+        });
     }
 
     public string TunnelSummaryLine()
@@ -559,6 +658,8 @@ public sealed class ClientSession : IDisposable
         double downDur = Math.Max(1e-3, ((_finalUs > 0 ? _finalUs : now) - _startUs) / 1e6);
         var sb = new StringBuilder();
         sb.AppendLine($"===== Summary ({dur:0} s, {Config}) =====");
+        if (Config.BaselineSec > 0 && Config.UpMbps + Config.DownMbps > 0)
+            sb.AppendLine($"(averages include the {Config.BaselineSec} s idle baseline at the start)");
         if (_classes.Count <= 2)
         {
             foreach (var c in _classes)
@@ -579,6 +680,11 @@ public sealed class ClientSession : IDisposable
                               $"{LossPct(rx),7:0.##}% {rx.JitterUs / 1000,7:0.00}ms {(rt.Samples > 0 ? $"{rt.AvgUs / 1000:0.0}ms" : "-"),8}");
             }
         }
+        if (Config.UpMbps + Config.DownMbps > 0 && _bloat.CurrentGrade is string g)
+            sb.AppendLine($"Bufferbloat: grade {g} - RTT +{_bloat.IncreaseMs:0.0} ms under load (idle {_bloat.IdleMs:0.0} ms, loaded {_bloat.LoadedMs:0.0} ms): {BufferbloatMeter.Describe(g)}");
+        if (Mtu != null) sb.AppendLine(Mtu.Summary);
+        var lossyTrace = Traces.LastOrDefault(t => t.LossStartsAt != null);
+        if (lossyTrace != null) sb.AppendLine("Last trouble trace: " + lossyTrace.Summary);
         long lag = _classes.Sum(c => c.Eng.SenderLagEvents);
         if (lag > 0) sb.AppendLine($"Note: client sender fell behind schedule {lag} time(s) - local CPU/NIC may be limiting.");
         foreach (var t in _tunnels)

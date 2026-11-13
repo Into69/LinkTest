@@ -31,6 +31,37 @@ public static class Protocol
         try { s.IOControl(SIO_UDP_CONNRESET, new byte[] { 0, 0, 0, 0 }, null); } catch { }
     }
 
+    /// <summary>
+    /// Sets the don't-fragment bit (IPv4) / IPV6_DONTFRAG so oversized datagrams are dropped (or rejected
+    /// locally with MessageSize) instead of being fragmented. Best effort; returns false if unsupported.
+    /// </summary>
+    public static bool SetDontFragment(Socket s)
+    {
+        bool ok = false;
+        Span<byte> one = stackalloc byte[4];
+        BitConverter.TryWriteBytes(one, 1);
+        Span<byte> pmtuDo = stackalloc byte[4];
+        BitConverter.TryWriteBytes(pmtuDo, 2);   // IP_PMTUDISC_DO
+        bool v6 = s.AddressFamily == AddressFamily.InterNetworkV6;
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                // IP_DONTFRAGMENT = 14 (also applies to IPv4-mapped traffic on dual-mode sockets), IPV6_DONTFRAG = 14
+                if (!v6 || s.DualMode) { s.SetRawSocketOption(0, 14, one); ok = true; }
+                if (v6) { s.SetRawSocketOption(41, 14, one); ok = true; }
+            }
+            else
+            {
+                // Linux / Android: IP_MTU_DISCOVER = 10 (value IP_PMTUDISC_DO), IPV6_DONTFRAG = 62
+                if (!v6 || s.DualMode) { s.SetRawSocketOption(0, 10, pmtuDo); ok = true; }
+                if (v6) { s.SetRawSocketOption(41, 62, one); ok = true; }
+            }
+        }
+        catch { }
+        return ok;
+    }
+
     public static void TuneUdp(Socket s)
     {
         try { s.ReceiveBufferSize = 8 * 1024 * 1024; } catch { }
@@ -73,7 +104,20 @@ public static class Protocol
     }
 }
 
-public enum PacketType : byte { Data = 1, ProbeReq = 2, ProbeResp = 3 }
+public enum PacketType : byte
+{
+    Data = 1,
+    ProbeReq = 2,
+    ProbeResp = 3,
+    /// <summary>Path-MTU test, upstream: client sends a don't-fragment datagram of the probed size (1.6+).</summary>
+    MtuProbe = 4,
+    /// <summary>Server's reply to <see cref="MtuProbe"/>: header only, StreamId = size received.</summary>
+    MtuAck = 5,
+    /// <summary>Path-MTU test, downstream: client asks for a datagram of StreamId bytes.</summary>
+    MtuRequest = 6,
+    /// <summary>Server's don't-fragment datagram of the requested size.</summary>
+    MtuDown = 7,
+}
 
 [Flags]
 public enum PacketFlags : ushort { None = 0, HasReport = 1, Heartbeat = 2 }

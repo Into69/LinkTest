@@ -17,6 +17,8 @@ sealed class ClientSettings
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
     public bool CheckForUpdates { get; set; } = true;
     public bool IpLookup { get; set; } = true;
+    public bool MeasureMtu { get; set; } = true;
+    public bool AutoTraceroute { get; set; } = true;
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinkTest", "client-settings.json");
 

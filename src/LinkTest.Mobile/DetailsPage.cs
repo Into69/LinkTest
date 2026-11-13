@@ -10,6 +10,8 @@ sealed class DetailsPage : ContentPage
     readonly VerticalStackLayout _tunnels = new() { Spacing = 4 };
     readonly VerticalStackLayout _classes = new() { Spacing = 4 };
     readonly VerticalStackLayout _conn = new() { Spacing = 2 };
+    readonly Label _mtu = new() { FontSize = 12 };
+    readonly Label _trace = new() { FontFamily = "monospace", FontSize = 10, LineBreakMode = LineBreakMode.NoWrap };
 
     public DetailsPage()
     {
@@ -25,12 +27,16 @@ sealed class DetailsPage : ContentPage
                     Ui.Header("VPN tunnels"), _tunnels,
                     Ui.Header("Traffic classes"), _classes,
                     Ui.Header("Connection"), Ui.Card(_conn),
+                    Ui.Header("Path MTU"), Ui.Card(_mtu),
+                    Ui.Header("Traceroute"), Ui.Card(new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _trace }),
                 },
             },
         };
         _app.Sampled += _ => Refresh();
         _app.StateChanged += Refresh;
         _app.ConnectionChanged += ShowConnection;
+        _app.PathChanged += ShowPath;
+        ShowPath();
         Refresh();
     }
 
@@ -82,6 +88,26 @@ sealed class DetailsPage : ContentPage
             foreach (var _ in s.Classes) _classes.Add(new ClassCard());
         }
         for (int i = 0; i < s.Classes.Count; i++) ((ClassCard)_classes[i]).Set(s.Classes[i]);
+    }
+
+    void ShowPath()
+    {
+        var m = _app.Mtu;
+        if (m == null) _mtu.Text = _app.Busy ? (_app.Settings.MeasureMtu ? "Measuring…" : "Off (Settings)") : "Measured when a test starts.";
+        else
+        {
+            var sb = new System.Text.StringBuilder(m.Summary);
+            if (m.Ok)
+            {
+                sb.Append("\n\nRecommended tunnel MTU / TCP MSS:");
+                foreach (var v in VpnOverhead.All) sb.Append($"\n• {v.Name}: {v.TunnelMtu(m.PathMtu, m.Ipv6)} / {v.TcpMss(m.PathMtu, m.Ipv6)}");
+            }
+            _mtu.Text = sb.ToString();
+        }
+        var traces = _app.Traces;
+        _trace.Text = traces.Count == 0
+            ? (_app.Settings.AutoTraceroute ? "Runs at the start and when loss, stalls or tunnel drops appear." : "Off (Settings)")
+            : string.Join("\n", traces.Reverse().Select(t => t.Format())) + "\nLoss on one hop that does not continue is usually ICMP rate limiting.";
     }
 
     void ShowConnection(ConnectionInfo c)

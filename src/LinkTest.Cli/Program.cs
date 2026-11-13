@@ -56,6 +56,9 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --loss PCT         artificial random loss in both directions (testing aid)
           --csv FILE         write per-second samples to a CSV file
           --no-ip-lookup     don't query ipinfo.io for this client's public IP details
+          --baseline SEC     idle seconds at the start for the bufferbloat grade (default 3, 0 = off)
+          --no-mtu           skip the path-MTU test
+          --no-trace         no automatic traceroutes
         """);
     return 0;
 }
@@ -64,7 +67,7 @@ string host = args[0];
 int port = Protocol.DefaultPort;
 string? key = null, csvPath = null, tunnelSel = "default";
 double loss = 0;
-bool ipLookup = true;
+bool ipLookup = true, measureMtu = true, autoTrace = true;
 var cfg = new TestConfig { DurationSec = 10 };
 for (int i = 1; i < args.Length; i++)
 {
@@ -92,6 +95,9 @@ for (int i = 1; i < args.Length; i++)
         case "--loss": loss = double.Parse(Next(), inv); break;
         case "--csv": csvPath = Next(); break;
         case "--no-ip-lookup": ipLookup = false; break;
+        case "--baseline": cfg.BaselineSec = int.Parse(Next()); break;
+        case "--no-mtu": measureMtu = false; break;
+        case "--no-trace": autoTrace = false; break;
         default: Console.Error.WriteLine($"Unknown option {args[i]}"); return 1;
     }
 }
@@ -111,6 +117,9 @@ using var session = new ClientSession();
 var ended = new TaskCompletionSource<string>();
 session.Log += m => Console.WriteLine($"{DateTime.Now:HH:mm:ss} {m}");
 session.Ended += r => ended.TrySetResult(r);
+session.TraceCompleted += t => { if (t.Error == null) Console.Write(t.Format()); };
+session.MeasureMtu = measureMtu;
+session.AutoTraceroute = autoTrace;
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };

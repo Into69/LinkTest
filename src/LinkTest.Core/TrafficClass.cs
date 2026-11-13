@@ -111,6 +111,7 @@ public static class TrafficClasses
         PacketSize = k.PacketSize > 0 ? k.PacketSize : c.PacketSize,
         BurstOnMs = c.BurstOnMs,
         BurstOffMs = c.BurstOffMs,
+        StartDelayUs = c.BaselineSec * 1_000_000L,
     };
 
     /// <summary>

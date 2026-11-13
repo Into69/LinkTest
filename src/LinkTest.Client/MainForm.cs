@@ -44,6 +44,11 @@ sealed class MainForm : Form
     readonly StatTile _tRetrans = new("TCP retransmits ↑ / ↓");
     readonly StatTile _tMos = new("VoIP MOS (est.)");
     readonly StatTile _tTime = new("Elapsed");
+    readonly StatTile _tBloat = new("Bufferbloat");
+    readonly TextBox _pathView = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
+    readonly CheckBox _mtu = new() { Text = "Measure path MTU when a test starts", AutoSize = true };
+    readonly CheckBox _trace = new() { Text = "Traceroute at start and when trouble appears", AutoSize = true };
+    readonly NumericUpDown _baseline = Num(0, 60, 0);
     readonly LineChart _chartTput = new() { Title = "Throughput", Unit = "Mbps", Dock = DockStyle.Fill };
     readonly LineChart _chartLat = new() { Title = "Latency", Unit = "ms", Dock = DockStyle.Fill };
     readonly LineChart _chartLoss = new() { Title = "Packet loss", Unit = "%", Dock = DockStyle.Fill, MinYMax = 1 };
@@ -154,6 +159,13 @@ sealed class MainForm : Form
         Row(form, "Artificial loss (%)", _loss, "Testing aid: the client randomly discards this percentage of UDP packets in both directions, to see how the tunnels react.\n" +
             "Can be changed while a test is running - e.g. raise it to watch tunnels drop, then lower it to see whether they recover.");
 
+        Header(form, "Diagnostics");
+        Row(form, "Idle baseline (s)", _baseline, "Seconds at the start with no load, to measure the idle round-trip time for the bufferbloat grade. 0 disables the grade.");
+        form.Controls.Add(_mtu); form.SetColumnSpan(_mtu, 2); _inputs.Add(_mtu);
+        form.Controls.Add(_trace); form.SetColumnSpan(_trace, 2); _inputs.Add(_trace);
+        _tips.SetToolTip(_mtu, "Finds the largest packet that crosses the path unfragmented in each direction and recommends tunnel MTUs (needs a 1.6+ server). Results on the Path tab.");
+        _tips.SetToolTip(_trace, "Traces the route to the server at the start, and again (at most once a minute) when loss of 2% or more, a stall of 1 s or more, or a tunnel drop appears. Results on the Path tab.");
+
         Header(form, "VPN / tunnel simulations");
         var tunnelHelp = new Label
         {
@@ -207,7 +219,7 @@ sealed class MainForm : Form
 
         // Right side
         var tiles = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4), WrapContents = true };
-        foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tTime }) tiles.Controls.Add(t);
+        foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tBloat, _tTime }) tiles.Controls.Add(t);
         _tUp.Width = _tDown.Width = 175;
 
         _chartTput.AddSeries("Upload (server rx)", Color.FromArgb(0, 120, 212));
@@ -248,6 +260,9 @@ sealed class MainForm : Form
         _bottomTabs.TabPages.Add(tunnelsTab);
         _bottomTabs.TabPages.Add(classesTab);
         _bottomTabs.TabPages.Add(connTab);
+        var pathTab = new TabPage("Path (MTU / traceroute)");
+        pathTab.Controls.Add(_pathView);
+        _bottomTabs.TabPages.Add(pathTab);
 
         var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         bottom.Panel1.Controls.Add(_bottomTabs);
@@ -357,6 +372,9 @@ sealed class MainForm : Form
         _loss.Value = (decimal)Math.Clamp(_settings.ArtificialLossPct, 0, 100);
         _csv.Checked = _settings.CsvEnabled;
         _ipLookup.Checked = _settings.IpLookup;
+        _mtu.Checked = _settings.MeasureMtu;
+        _trace.Checked = _settings.AutoTraceroute;
+        _baseline.Value = Math.Clamp(c.BaselineSec, 0, 60);
         _csvFolder.Text = _settings.CsvFolder;
         RefreshTunnelList();
         UpdateEnabledInputs();
@@ -371,6 +389,8 @@ sealed class MainForm : Form
         _settings.ArtificialLossPct = (double)_loss.Value;
         _settings.CsvEnabled = _csv.Checked;
         _settings.IpLookup = _ipLookup.Checked;
+        _settings.MeasureMtu = _mtu.Checked;
+        _settings.AutoTraceroute = _trace.Checked;
         _settings.CsvFolder = _csvFolder.Text.Trim();
         for (int i = 0; i < _settings.Tunnels.Count && i < _tunnelList.Items.Count; i++)
             _settings.Tunnels[i].Enabled = _tunnelList.GetItemChecked(i);
@@ -391,6 +411,7 @@ sealed class MainForm : Form
         Dscp = DscpSimulateSelected ? 0 : ParseDscp(_dscp.SelectedItem?.ToString() ?? "0"),
         DscpSimulate = DscpSimulateSelected,
         DurationSec = (int)_duration.Value,
+        BaselineSec = (int)_baseline.Value,
     };
 
     bool DscpSimulateSelected => _dscp.SelectedItem as string == DscpSimulateItem;
@@ -504,6 +525,10 @@ sealed class MainForm : Form
         session.Log += m => Ui(() => AppendLog(m));
         session.Ended += r => Ui(() => OnEnded(session, r));
         session.ConnectionChanged += c => Ui(() => ShowConnection(c));
+        session.MtuMeasured += _ => Ui(() => ShowPath(session));
+        session.TraceCompleted += _ => Ui(() => ShowPath(session));
+        session.MeasureMtu = _mtu.Checked;
+        session.AutoTraceroute = _trace.Checked;
         _session = session;
         UpdateEnabledInputs();
         _start.Enabled = false;
@@ -512,7 +537,8 @@ sealed class MainForm : Form
         _tunnelView.Items.Clear();
         _classView.Items.Clear();
         _connView.Items.Clear();
-        foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tTime }) t.Set("–");
+        foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tBloat, _tTime }) t.Set("–");
+        _pathView.Text = _mtu.Checked || _trace.Checked ? "Waiting for the test to start…" : "Path MTU and traceroute are turned off (Diagnostics settings).";
         _status.Text = $"Connecting to {host}…";
 
         _connectCts = new CancellationTokenSource();
@@ -603,6 +629,11 @@ sealed class MainForm : Form
         _tRetrans.Set(session.Config.UsesTcp ? $"{Kb(s.UpRetransBytes)} / {Kb(s.DownRetransBytes)}" : "n/a (UDP)",
             session.Config.UsesTcp ? $"KB/s · RTOs {s.UpTimeoutsTotal} / {s.DownTimeoutsTotal}" : "");
         _tMos.Set(Fmt(s.Mos, "0.0"), double.IsFinite(s.Mos) ? MosText(s.Mos) : "", s.Mos >= 4 ? Color.ForestGreen : s.Mos >= 3.6 ? Color.DarkOrange : Color.Firebrick);
+        if (s.BaselinePhase) _tBloat.Set("…", $"measuring idle RTT ({session.Config.BaselineSec} s)");
+        else if (s.BloatGrade != null)
+            _tBloat.Set(s.BloatGrade, $"+{s.BloatIncreaseMs:0.0} ms under load (idle {s.IdleRttMs:0.0})",
+                s.BloatGrade is "A+" or "A" ? Color.ForestGreen : s.BloatGrade is "B" or "C" ? Color.DarkOrange : Color.Firebrick);
+        else _tBloat.Set("–", session.Config.BaselineSec == 0 ? "baseline off / server < 1.6" : session.Config.UpMbps + session.Config.DownMbps > 0 ? "measuring under load…" : "no load");
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
         _tTime.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", session.Config.DurationSec > 0 ? $"of {session.Config.DurationSec} s" : "until stopped");
 
@@ -680,6 +711,39 @@ sealed class MainForm : Form
         _connView.Items.Clear();
         foreach (var (k, v) in rows) _connView.Items.Add(new ListViewItem(new[] { k, v }));
         _connView.EndUpdate();
+    }
+
+    void ShowPath(ClientSession session)
+    {
+        var sb = new System.Text.StringBuilder();
+        var m = session.Mtu;
+        sb.AppendLine("PATH MTU");
+        if (m == null) sb.AppendLine(_mtu.Checked ? "  measuring…" : "  (off)");
+        else
+        {
+            sb.AppendLine("  " + m.Summary);
+            if (m.Ok)
+            {
+                sb.AppendLine($"  Payload limits: up {m.UpPayload} B, down {m.DownPayload} B (UDP); outer packets are {(m.Ipv6 ? "IPv6" : "IPv4")}.");
+                sb.AppendLine();
+                sb.AppendLine($"  {"Tunnel type",-34} {"Overhead",9} {"Tunnel MTU",11} {"TCP MSS",8}");
+                foreach (var v in VpnOverhead.All)
+                    sb.AppendLine($"  {v.Name,-34} {v.Overhead(m.Ipv6),7} B {v.TunnelMtu(m.PathMtu, m.Ipv6),11} {v.TcpMss(m.PathMtu, m.Ipv6),8}");
+                sb.AppendLine("  Set the tunnel interface MTU (or MSS clamping) to at most these values to avoid fragmentation.");
+            }
+        }
+        sb.AppendLine();
+        sb.AppendLine("TRACEROUTES (newest first)");
+        var traces = session.Traces;
+        if (traces.Count == 0) sb.AppendLine(_trace.Checked ? "  none yet" : "  (off)");
+        foreach (var t in traces.Reverse())
+        {
+            sb.Append(t.Format());
+            sb.AppendLine();
+        }
+        sb.AppendLine("Note: loss on a single hop that does not continue to later hops is usually ICMP rate limiting, not real loss.");
+        _pathView.Text = sb.ToString();
+        _pathView.Select(0, 0);
     }
 
     void UpdateClassView(StatSample s)

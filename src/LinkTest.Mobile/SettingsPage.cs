@@ -20,7 +20,8 @@ sealed class SettingsPage : ContentPage
     readonly Entry _up = Num(true), _down = Num(true), _size = Num(), _burstOn = Num(), _burstOff = Num(), _streams = Num(), _duration = Num();
     readonly Picker _profile = new() { ItemsSource = Enum.GetNames<TrafficProfile>() };
     readonly Picker _dscp = new() { ItemsSource = DscpItems };
-    readonly Switch _keepOn = new(), _updates = new();
+    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new();
+    readonly Entry _baseline = Num();
     readonly List<(CheckBox box, int index)> _tunnels = new();
     readonly VerticalStackLayout _form;
 
@@ -49,6 +50,11 @@ sealed class SettingsPage : ContentPage
         Row("DSCP marking", _dscp);
         _form.Add(Ui.Hint("On Android DSCP marking needs no special permission. \"Simulate\" runs a 10-class enterprise mix (voice EF, video AF41 … scavenger CS1) - see the Details tab while running."));
         Row("Duration (s, 0 = until stopped)", _duration);
+
+        _form.Add(Ui.Header("Diagnostics"));
+        Row("Idle baseline (s) - for the bufferbloat grade, 0 = off", _baseline);
+        SwitchRow("Measure path MTU when a test starts", _mtuSw);
+        SwitchRow("Traceroute at start and on trouble", _traceSw);
 
         _form.Add(Ui.Header("VPN / tunnel simulations"));
         _form.Add(Ui.Hint("Each checked tunnel sends real keepalive and handshake probes with its own timers; it drops only if the link loses enough of them."));
@@ -125,6 +131,9 @@ sealed class SettingsPage : ContentPage
             : Math.Max(0, Array.FindIndex(DscpItems, d => int.TryParse(d.Split(' ')[0], out var v) && v == c.Dscp));
         _duration.Text = c.DurationSec.ToString(CultureInfo.InvariantCulture);
         _keepOn.IsToggled = st.KeepScreenOn;
+        _baseline.Text = c.BaselineSec.ToString(CultureInfo.InvariantCulture);
+        _mtuSw.IsToggled = st.MeasureMtu;
+        _traceSw.IsToggled = st.AutoTraceroute;
         _updates.IsToggled = st.CheckForUpdates;
     }
 
@@ -151,6 +160,9 @@ sealed class SettingsPage : ContentPage
         c.DurationSec = Int(_duration, c.DurationSec, 0, 864000);
         foreach (var (box, i) in _tunnels) st.Tunnels[i].Enabled = box.IsChecked;
         st.KeepScreenOn = _keepOn.IsToggled;
+        c.BaselineSec = Int(_baseline, c.BaselineSec, 0, 60);
+        st.MeasureMtu = _mtuSw.IsToggled;
+        st.AutoTraceroute = _traceSw.IsToggled;
         st.CheckForUpdates = _updates.IsToggled;
         st.Save();
     }

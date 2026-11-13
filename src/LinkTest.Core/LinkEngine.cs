@@ -149,7 +149,7 @@ public sealed class LinkEngine
 
         TrafficShaper? shaper = spec.RateBps > 0 ? new TrafficShaper(spec, rnd.Next()) : null;
         long seq = 0, lastSent = 0, lastReport = 0;
-        shaper?.Start(Clock.NowUs);
+        shaper?.Start(Clock.NowUs + Math.Max(0, spec.StartDelayUs));
 
         while (!ct.IsCancellationRequested)
         {

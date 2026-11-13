@@ -7,4 +7,7 @@
     <Project Path="src/LinkTest.Server/LinkTest.Server.csproj" />
     <Project Path="src/LinkTest.ServerGui/LinkTest.ServerGui.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LinkTest.Tests/LinkTest.Tests.csproj" />
+  </Folder>
 </Solution>

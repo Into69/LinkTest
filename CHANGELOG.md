@@ -1,0 +1,72 @@
+# Changelog
+
+Each release's notes on GitHub are taken from its section below.
+
+## [1.6.0]
+
+### New
+- **Path MTU test.** When a test starts, the client finds the largest packet that crosses the path
+  unfragmented, upstream and downstream, using don't-fragment probes.
+  - It recommends a tunnel MTU and TCP MSS for WireGuard, IPsec (AES-GCM and AES-CBC), OpenVPN and GRE.
+  - The results appear on the new *Path* tab (desktop client) and on *Details* (Android).
+  - Needs a 1.6 server.
+- **Bufferbloat grade.** Each test now starts with a short idle baseline, 3 s by default and configurable.
+  - The client measures the idle round-trip time, then compares it with the round-trip time under load.
+  - The result is a grade from A+ to F, using the same thresholds as common bufferbloat tests.
+  - A new tile shows it, along with the extra delay under load in ms.
+- **Traceroute when trouble appears.** An MTR-style traceroute to the server, with loss and RTT per hop:
+  - one at the start of each test, as a baseline;
+  - again on loss of 2% or more, a stall of 1 s or more, or a tunnel drop (at most once a minute).
+  - It reports the hop where loss starts and persists to the end of the path.
+- **CLI:** `--baseline SEC`, `--no-mtu` and `--no-trace`; traceroutes are printed as hop tables.
+- **Automated tests.** About 50 unit and end-to-end tests, covering:
+  - loss and reorder accounting, traffic shaping, tunnel state machines, traffic classes;
+  - every traffic mode end to end against a real in-process server;
+  - live artificial-loss changes, MTU probing, traceroute and old-client compatibility.
+
+  They run on every push and before every release.
+
+### Changed
+- Test averages include the idle baseline, and the summary says so.
+- GitHub Actions steps updated to v5. Release notes now come from this changelog.
+
+### Compatibility
+- 1.5 clients work with a 1.6 server, and vice versa.
+- The MTU test and bufferbloat grade only run when both ends are 1.6 or newer; older servers are detected
+  and the client says so.
+
+## [1.5.0]
+- **Android client app** (`LinkTest-Client-android.apk`, Android 7.0+). It has the same tests, tunnel
+  simulations, traffic classes and IP lookup as the desktop client, and updates itself through the Android
+  installer.
+- DSCP marking and TCP retransmit counters on Linux/Android.
+- All programs moved to .NET 10.
+
+## [1.4.1]
+- Fixed self-update. The new version was installed but did not restart: single-file apps could no longer
+  load parts of themselves once their exe had been replaced.
+- The update banner no longer cuts off its buttons at high DPI.
+- The server GUI now auto-starts and checks for updates when launched minimized.
+- The version is shown in the title bars. Update steps are logged to `%LOCALAPPDATA%\LinkTest\update.log`.
+
+## [1.4.0]
+- **Client IP lookup on both ends.** The client and server show public IP, reverse DNS, ISP/ASN and location
+  (via ipinfo.io), along with NAT detection.
+- Artificial loss can be changed while a test is running.
+
+## [1.3.0]
+- **DSCP Simulate:** a 10-class enterprise traffic mix (EF voice … CS1 scavenger) with per-class statistics.
+- **Server GUI** (`LinkTestServerGui.exe`).
+- The client's Start/Stop buttons are always visible.
+
+## [1.2.0]
+- **Mixed TCP + UDP** traffic mode.
+
+## [1.1.0]
+- Self-update from GitHub Releases, and the release workflow.
+
+## [1.0.0]
+- First version:
+  - Windows server, client GUI and CLI;
+  - UDP/TCP tests with in-band statistics and traffic profiles;
+  - VPN tunnel simulations.
