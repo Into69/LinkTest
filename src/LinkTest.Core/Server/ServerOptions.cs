@@ -67,8 +67,13 @@ public sealed class ServerUpdateService
         _host = host; _opts = opts; _channel = channel; _shutdown = shutdown;
     }
 
-    /// <summary>True once an update was installed; the program should restart itself.</summary>
+    /// <summary>True once an update was downloaded and the server was stopped to install it.</summary>
     public bool RestartRequested { get; private set; }
+    /// <summary>
+    /// Downloaded update package. The program installs it with <see cref="Updater.ApplyAndRestart"/> after the
+    /// server has stopped and must exit right afterwards.
+    /// </summary>
+    public string? PendingPackage { get; private set; }
     /// <summary>Latest available update that was not installed automatically.</summary>
     public UpdateInfo? Available { get; private set; }
     public event Action<UpdateInfo>? UpdateAvailable;
@@ -120,8 +125,8 @@ public sealed class ServerUpdateService
             told = true;
             await Task.Delay(TimeSpan.FromSeconds(15), ct);
         }
-        Updater.Apply(zip, _channel);
-        ServerHost.Log($"Update {info.Tag} installed.");
+        ServerHost.Log($"Update {info.Tag} downloaded; stopping the server to install it.");
+        PendingPackage = zip;
         RestartRequested = true;
         _shutdown.Cancel();
         return true;

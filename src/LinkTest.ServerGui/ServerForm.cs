@@ -68,7 +68,8 @@ sealed class ServerForm : Form
         _firewallBtn.Click += (_, _) => AddFirewallRules();
         _updateLink.Click += async (_, _) => { if (_update != null) await InstallUpdateAsync(_update, ask: true); };
         FormClosing += OnClosing;
-        Shown += async (_, _) =>
+        // Load (not Shown): Shown never fires when the window starts minimized.
+        Load += async (_, _) =>
         {
             if (autoStart || _settings.StartOnLaunch) StartServer();
             if (_settings.CheckForUpdates)
@@ -126,7 +127,7 @@ sealed class ServerForm : Form
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         split.Panel1.Controls.Add(sessionsBox);
         split.Panel2.Controls.Add(logBox);
-        Load += (_, _) => split.SplitterDistance = (int)(split.Height * 0.4);
+        InitSplit(this, split, 0.4);
 
         var strip = new StatusStrip();
         strip.Items.Add(_status);
@@ -150,6 +151,29 @@ sealed class ServerForm : Form
         _tips.SetToolTip(l, tip);
         _tips.SetToolTip(c, tip);
         _inputs.Add(c);
+    }
+
+    /// <summary>
+    /// Sets a splitter to a proportion of its height once it has a real size. Never throws: an exception in
+    /// a Load handler is silently swallowed by WinForms and skips the remaining Load handlers (e.g. when
+    /// the window starts minimized and has no height yet).
+    /// </summary>
+    static void InitSplit(Form form, SplitContainer split, double ratio)
+    {
+        bool done = false;
+        void Apply()
+        {
+            if (done || split.Height < 100) return;
+            try
+            {
+                int max = split.Height - split.Panel2MinSize - split.SplitterWidth;
+                split.SplitterDistance = Math.Clamp((int)(split.Height * ratio), split.Panel1MinSize, Math.Max(split.Panel1MinSize, max));
+                done = true;
+            }
+            catch { }
+        }
+        form.Load += (_, _) => Apply();
+        split.SizeChanged += (_, _) => Apply();
     }
 
     static NumericUpDown Num(decimal min, decimal max) => new() { Minimum = min, Maximum = max, ThousandsSeparator = false };
@@ -402,29 +426,28 @@ sealed class ServerForm : Form
             bool wasRunning = Running;
             if (wasRunning) { _hostCts?.Cancel(); try { await _hostTask!; } catch { } }
             SaveSettings();
-            await Task.Run(() => Updater.Apply(zip, UpdateChannel.ServerGui));
-            OnLog($"{DateTime.Now:HH:mm:ss} Update installed; restarting.");
-            Updater.Restart(wasRunning ? new[] { "--autostart" } : Array.Empty<string>());
-            _forceClose = true;
-            Close();
+            OnLog($"{DateTime.Now:HH:mm:ss} Installing update and restarting…");
+            _timer.Stop();
+            await Task.Run(() => Updater.ApplyAndRestart(zip, UpdateChannel.ServerGui, wasRunning ? new[] { "--autostart" } : Array.Empty<string>()));
+            // The exe has been replaced: exit at once (see Updater.ApplyAndRestart).
+            Environment.Exit(0);
         }
         catch (Exception e)
         {
-            OnLog($"{DateTime.Now:HH:mm:ss} Update failed: {e.Message}");
+            Updater.Log("Server GUI update failed: " + e);
+            OnLog($"{DateTime.Now:HH:mm:ss} Update failed: {Updater.Describe(e)} (details in {Updater.LogPath})");
             _updateLink.Text = $"Update {info.Tag} failed - retry";
-            if (ask) MessageBox.Show(this, "Update failed: " + e.Message, "LinkTest Server update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (ask) MessageBox.Show(this, "Update failed: " + Updater.Describe(e) + $"\n\nDetails: {Updater.LogPath}", "LinkTest Server update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         finally { _updating = false; }
     }
 
     // ------------------------------------------------------------------ misc
 
-    bool _forceClose;
-
     void OnClosing(object? sender, FormClosingEventArgs e)
     {
         int n = _host?.SessionCount ?? 0;
-        if (!_forceClose && n > 0 && MessageBox.Show(this, $"{n} test(s) are running. Stop the server and exit?", "LinkTest Server",
+        if (n > 0 && MessageBox.Show(this, $"{n} test(s) are running. Stop the server and exit?", "LinkTest Server",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
         {
             e.Cancel = true;

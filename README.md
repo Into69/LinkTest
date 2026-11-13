@@ -99,6 +99,8 @@ The programs update themselves from this repository's **GitHub Releases**.
 - **Offline**: `--update-from LinkTest-Server-win-x64.zip` (server and CLI) installs from a downloaded
   release zip.
 
+Every update step is logged to `%LOCALAPPDATA%\LinkTest\update.log`.
+
 Downloads are verified against the SHA-256 digest that GitHub publishes for each release asset. Files in use
 are renamed to `*.old` and removed the next time the program starts. If something fails, the update is
 rolled back. A program can only update itself when its folder is writable; under `Program Files`, run it as

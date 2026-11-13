@@ -163,6 +163,7 @@ public static class Updater
         string stagingRoot = Path.Combine(Path.GetTempPath(), $"LinkTest-staging-{Guid.NewGuid():N}");
         var moved = new List<(string target, string backup)>();
         var added = new List<string>();
+        Log($"Apply: {zipPath} -> {appDir}");
         try
         {
             ZipFile.ExtractToDirectory(zipPath, stagingRoot);
@@ -186,13 +187,16 @@ public static class Updater
                         if (File.Exists(backup) && !TryDelete(backup)) backup = $"{target}.{Guid.NewGuid():N}.old";
                         File.Move(target, backup);
                         moved.Add((target, backup));
+                        Log($"Apply: renamed {target} -> {backup}");
                     }
                     else added.Add(target);
                     File.Copy(file, target);
+                    Log($"Apply: installed {target}");
                 }
             }
-            catch
+            catch (Exception e)
             {
+                Log("Apply failed, rolling back: " + e);
                 foreach (var a in added) TryDelete(a);
                 foreach (var (target, backup) in moved)
                 {
@@ -209,12 +213,65 @@ public static class Updater
         }
     }
 
+    /// <summary>
+    /// Installs the package and starts the new version. The caller must exit immediately afterwards
+    /// (e.g. <c>Environment.Exit(0)</c>) without running further code.
+    /// </summary>
+    /// <remarks>
+    /// Single-file .NET apps load assemblies lazily from their own exe. Once the exe has been swapped for the
+    /// new version, loading anything not yet loaded fails (FileNotFoundException), so everything the restart
+    /// needs is loaded before the swap and nothing else runs after it.
+    /// </remarks>
+    public static void ApplyAndRestart(string zipPath, UpdateChannel channel, IEnumerable<string> restartArgs)
+    {
+        var args = restartArgs.ToList();
+        PreloadForRestart();
+        Apply(zipPath, channel);
+        Restart(args);
+    }
+
+    /// <summary>Loads the assemblies used by <see cref="Restart"/> and error reporting while the original exe is still in place.</summary>
+    static void PreloadForRestart()
+    {
+        using (var p = Process.GetCurrentProcess()) _ = p.Id;
+        _ = new ProcessStartInfo("x") { UseShellExecute = false }.ArgumentList.Count;
+        _ = Describe(new System.ComponentModel.Win32Exception(2));
+        _ = Describe(new AggregateException(new Exception()));
+        Log("Preloaded restart dependencies");
+    }
+
     /// <summary>Starts a new instance of this program with the given arguments.</summary>
     public static void Restart(IEnumerable<string> args)
     {
-        var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, WorkingDirectory = Environment.CurrentDirectory };
+        string exe = Environment.ProcessPath!;
+        var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Environment.CurrentDirectory };
         foreach (var a in args) psi.ArgumentList.Add(a);
-        Process.Start(psi);
+        Log($"Restart: starting {exe} {string.Join(' ', args)}");
+        var p = Process.Start(psi);
+        Log($"Restart: started pid {p?.Id}");
+    }
+
+    /// <summary>Update diagnostics: %LOCALAPPDATA%\LinkTest\update.log.</summary>
+    public static string LogPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinkTest", "update.log");
+
+    public static void Log(string msg)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+            var fi = new FileInfo(LogPath);
+            if (fi.Exists && fi.Length > 1_000_000) fi.Delete();
+            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{Environment.ProcessId} {Path.GetFileName(Environment.ProcessPath)} {CurrentVersion}] {msg}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
+    /// <summary>A readable one-line description of an update error (some exceptions have an empty Message).</summary>
+    public static string Describe(Exception e)
+    {
+        var b = e is AggregateException a && a.InnerExceptions.Count == 1 ? a.InnerException! : e;
+        string msg = string.IsNullOrWhiteSpace(b.Message) ? "" : b.Message;
+        return msg.Length > 0 ? msg : b.GetType().Name + (b is System.ComponentModel.Win32Exception w ? $" (Windows error {w.NativeErrorCode})" : "");
     }
 
     /// <summary>

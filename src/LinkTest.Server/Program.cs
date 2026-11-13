@@ -58,10 +58,20 @@ catch (Exception e)
     return 2;
 }
 
-if (updater.RestartRequested)
+if (updater.PendingPackage != null)
 {
-    ServerHost.Log("Restarting with the new version…");
-    Updater.Restart(args);
+    ServerHost.Log("Installing the update and restarting…");
+    try
+    {
+        // Must be the last thing this process does (see Updater.ApplyAndRestart).
+        Updater.ApplyAndRestart(updater.PendingPackage, UpdateChannel.Server, args);
+    }
+    catch (Exception e)
+    {
+        Updater.Log("Server update failed: " + e);
+        ServerHost.Log($"Update failed: {Updater.Describe(e)} (details in {Updater.LogPath})");
+        return 5;
+    }
 }
 return 0;
 

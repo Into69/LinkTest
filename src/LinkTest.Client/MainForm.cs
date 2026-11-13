@@ -270,11 +270,8 @@ sealed class MainForm : Form
         Controls.Add(strip);
         Controls.Add(BuildUpdateBanner());
 
-        Load += (_, _) =>
-        {
-            split.SplitterDistance = (int)(split.Height * 0.58);
-            bottom.SplitterDistance = (int)(bottom.Height * 0.5);
-        };
+        InitSplit(this, split, 0.58);
+        InitSplit(this, bottom, 0.5);
     }
 
     void Header(TableLayoutPanel t, string text)
@@ -302,6 +299,29 @@ sealed class MainForm : Form
         b.Click += (_, _) => onClick();
         _inputs.Add(b);
         return b;
+    }
+
+    /// <summary>
+    /// Sets a splitter to a proportion of its height once it has a real size. Never throws: an exception in
+    /// a Load handler is silently swallowed by WinForms and skips the remaining Load handlers (e.g. when
+    /// the window starts minimized and has no height yet).
+    /// </summary>
+    static void InitSplit(Form form, SplitContainer split, double ratio)
+    {
+        bool done = false;
+        void Apply()
+        {
+            if (done || split.Height < 100) return;
+            try
+            {
+                int max = split.Height - split.Panel2MinSize - split.SplitterWidth;
+                split.SplitterDistance = Math.Clamp((int)(split.Height * ratio), split.Panel1MinSize, Math.Max(split.Panel1MinSize, max));
+                done = true;
+            }
+            catch { }
+        }
+        form.Load += (_, _) => Apply();
+        split.SizeChanged += (_, _) => Apply();
     }
 
     static NumericUpDown Num(decimal min, decimal max, int decimals) =>
@@ -693,23 +713,26 @@ sealed class MainForm : Form
 
     // ------------------------------------------------------------------ updates
 
-    readonly Panel _banner = new() { Dock = DockStyle.Top, Height = 40, Visible = false, BackColor = Color.FromArgb(255, 244, 206), Padding = new Padding(8, 4, 8, 4) };
-    readonly Label _bannerText = new() { AutoSize = true, Margin = new Padding(0, 8, 12, 0) };
-    readonly Button _bannerInstall = new() { Text = "Install and restart", AutoSize = true };
+    // Auto-sized so the buttons are never clipped, whatever the DPI scaling.
+    readonly FlowLayoutPanel _banner = new()
+    {
+        Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true,
+        Visible = false, BackColor = Color.FromArgb(255, 244, 206), Padding = new Padding(8, 4, 8, 4),
+    };
+    readonly Label _bannerText = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 12, 0) };
+    readonly Button _bannerInstall = new() { Text = "Install and restart", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8, 2, 8, 2) };
     readonly ToolStripMenuItem _autoCheckItem = new("Check for updates at startup") { CheckOnClick = true };
     UpdateInfo? _pendingUpdate;
     bool _updating;
 
     Control BuildUpdateBanner()
     {
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent };
-        var notes = new LinkLabel { Text = "What's new", AutoSize = true, Margin = new Padding(12, 8, 12, 0) };
-        var later = new Button { Text = "Later", AutoSize = true };
+        var notes = new LinkLabel { Text = "What's new", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(12, 0, 12, 0) };
+        var later = new Button { Text = "Later", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8, 2, 8, 2) };
         notes.LinkClicked += (_, _) => OpenUrl(_pendingUpdate?.PageUrl ?? Updater.ProjectUrl);
         later.Click += (_, _) => _banner.Visible = false;
         _bannerInstall.Click += async (_, _) => { if (_pendingUpdate != null) await InstallUpdateAsync(_pendingUpdate); };
-        flow.Controls.AddRange(new Control[] { _bannerText, _bannerInstall, notes, later });
-        _banner.Controls.Add(flow);
+        _banner.Controls.AddRange(new Control[] { _bannerText, _bannerInstall, notes, later });
         return _banner;
     }
 
@@ -723,7 +746,7 @@ sealed class MainForm : Form
         var page = new ToolStripMenuItem("Project page on GitHub");
         page.Click += (_, _) => OpenUrl(Updater.ProjectUrl);
         menu.DropDownItems.AddRange(new ToolStripItem[] { check, _autoCheckItem, new ToolStripSeparator(), page });
-        Shown += async (_, _) => { if (_settings.CheckForUpdates) await CheckForUpdatesAsync(manual: false); };
+        Load += async (_, _) => { if (_settings.CheckForUpdates) await CheckForUpdatesAsync(manual: false); };   // Load: also fires when started minimized
         return menu;
     }
 
@@ -779,17 +802,20 @@ sealed class MainForm : Form
             string zip = await Updater.DownloadAsync(info, progress);
             _bannerText.Text = "Installing…";
             SaveUiToSettings();
-            await Task.Run(() => Updater.Apply(zip, UpdateChannel.Client));
-            Updater.Restart(Array.Empty<string>());
-            Close();
+            _timer.Stop();
+            await Task.Run(() => Updater.ApplyAndRestart(zip, UpdateChannel.Client, Array.Empty<string>()));
+            // The exe has been replaced: exit at once - running more code could need assemblies that
+            // can no longer be loaded from the (swapped) single-file bundle.
+            Environment.Exit(0);
         }
         catch (Exception e)
         {
             _bannerText.Text = $"Update to {info.Tag} failed.";
             _bannerInstall.Enabled = true;
             _start.Enabled = _session == null;
-            AppendLog("Update failed: " + e.Message);
-            MessageBox.Show(this, "Update failed: " + e.Message, "LinkTest update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Updater.Log("Client update failed: " + e);
+            AppendLog("Update failed: " + Updater.Describe(e) + $" (details in {Updater.LogPath})");
+            MessageBox.Show(this, "Update failed: " + Updater.Describe(e) + $"\n\nDetails: {Updater.LogPath}", "LinkTest update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         finally
         {
