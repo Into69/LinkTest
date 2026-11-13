@@ -10,7 +10,6 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
-    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

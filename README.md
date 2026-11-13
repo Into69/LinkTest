@@ -48,6 +48,35 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
 
 **CLI**: `LinkTestCli.exe server.example.com --udp --up 20 --down 50 --profile voip --time 0 --tunnels all --csv log.csv`
 
+## Updates
+
+The programs update themselves from this repository's **GitHub Releases**.
+
+- **Client**: checks at startup (this can be turned off in the version menu at the bottom right). When a
+  newer release exists, a banner offers *Install and restart*.
+- **Server**: logs a notice when an update is available. `LinkTestServer --update` installs it now.
+  `--auto-update` checks every 6 hours, installs when no tests are running, and restarts with the same
+  arguments. `--no-update-check` disables checking.
+- **CLI**: `LinkTestCli --update`.
+- **Offline**: `--update-from LinkTest-Server-win-x64.zip` (server and CLI) installs from a downloaded
+  release zip.
+
+Downloads are verified against the SHA-256 digest that GitHub publishes for each release asset. Files in use
+are renamed to `*.old` and removed the next time the program starts. If something fails, the update is
+rolled back. A program can only update itself when its folder is writable; under `Program Files`, run it as
+Administrator.
+
+**Publishing a release:** bump `<Version>` in `Directory.Build.props`, commit, then push a matching tag:
+
+```powershell
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+`.github/workflows/release.yml` builds self-contained single-file exes and attaches
+`LinkTest-Client-win-x64.zip`, `LinkTest-Server-win-x64.zip` and `LinkTest-Cli-win-x64.zip` to the
+release. The tag sets the version, so running apps see it as new.
+
 ## How it works
 
 ```

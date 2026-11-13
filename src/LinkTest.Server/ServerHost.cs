@@ -20,6 +20,7 @@ sealed class ServerHost
     public ServerHost(ServerOptions opts) => _opts = opts;
 
     public ServerOptions Options => _opts;
+    public int SessionCount => _sessions.Count;
     public Socket UdpSocket => _udp;
 
     public static void Log(string msg)
@@ -30,7 +31,7 @@ sealed class ServerHost
     public async Task RunAsync(CancellationToken ct)
     {
         (_listener, _udp) = CreateSockets();
-        Log($"LinkTest server listening on TCP+UDP port {_opts.Port}" +
+        Log($"LinkTest server {Updater.CurrentVersion} listening on TCP+UDP port {_opts.Port}" +
             (_opts.Key != null ? " (key required)" : "") + $", cap {_opts.MaxMbps} Mbps/direction, max {_opts.MaxSessions} sessions");
         foreach (var a in LocalAddresses()) Log($"  local address: {a}");
 

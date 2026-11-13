@@ -1,0 +1,49 @@
+# Builds self-contained single-file exes and publishes them as a GitHub Release when a version tag is pushed:
+#   git tag v1.2.0 && git push origin v1.2.0
+# The programs' built-in updater looks for these assets on the latest release.
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $apps = @(
+            @{ Project = 'src/LinkTest.Client'; Asset = 'LinkTest-Client-win-x64.zip' },
+            @{ Project = 'src/LinkTest.Server'; Asset = 'LinkTest-Server-win-x64.zip' },
+            @{ Project = 'src/LinkTest.Cli';    Asset = 'LinkTest-Cli-win-x64.zip' }
+          )
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($a in $apps) {
+            $out = "publish/" + [IO.Path]::GetFileNameWithoutExtension($a.Asset)
+            dotnet publish $a.Project -c Release -r win-x64 --self-contained `
+              -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true `
+              -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none `
+              -p:Version=$version -o $out
+            if ($LASTEXITCODE -ne 0) { throw "publish failed for $($a.Project)" }
+            Compress-Archive -Path "$out/*" -DestinationPath "dist/$($a.Asset)" -Force
+          }
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' dist/*.zip --title 'LinkTest ${{ github.ref_name }}' --generate-notes

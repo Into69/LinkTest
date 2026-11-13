@@ -4,12 +4,42 @@ using LinkTest.Core.Tunnels;
 
 // Headless client: LinkTestCli <server> [options]
 var inv = CultureInfo.InvariantCulture;
+Updater.CleanupOldFiles();
+if (args.Length > 0 && args[0] is "--version") { Console.WriteLine(Updater.CurrentVersion); return 0; }
+if (args.Length > 0 && args[0] is "--update" or "--update-from")
+{
+    var ch = UpdateChannel.Cli;
+    if (!Updater.CanSelfUpdate(ch, out var why)) { Console.Error.WriteLine("Cannot update: " + why); return 3; }
+    try
+    {
+        string zip;
+        if (args[0] == "--update-from")
+        {
+            if (args.Length < 2) { Console.Error.WriteLine("--update-from needs a zip file"); return 1; }
+            zip = Path.Combine(Path.GetTempPath(), $"LinkTest-local-{Guid.NewGuid():N}.zip");
+            File.Copy(args[1], zip);
+        }
+        else
+        {
+            Console.WriteLine($"Current version {Updater.CurrentVersion}; checking {Updater.ProjectUrl} …");
+            var info = await Updater.CheckAsync(ch);
+            if (info == null) { Console.WriteLine("Already up to date."); return 0; }
+            Console.WriteLine($"Downloading {info.Tag} ({info.Size / 1e6:0.0} MB)…");
+            zip = await Updater.DownloadAsync(info);
+        }
+        Updater.Apply(zip, ch);
+        Console.WriteLine("Update installed.");
+        return 0;
+    }
+    catch (Exception e) { Console.Error.WriteLine("Update failed: " + e.Message); return 4; }
+}
 if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
 {
     Console.WriteLine("""
         LinkTest command-line client
 
         Usage: LinkTestCli <server-ip-or-fqdn> [options]
+               LinkTestCli --update | --update-from PACKAGE.zip | --version
           --port N           server port (default 7447)
           --udp | --tcp      transport (default udp)
           --up MBPS          client -> server rate (default 10)

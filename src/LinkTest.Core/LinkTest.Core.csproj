@@ -5,7 +5,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>LinkTest.Core</RootNamespace>
-    <Version>1.0.0</Version>
   </PropertyGroup>
 
 </Project>

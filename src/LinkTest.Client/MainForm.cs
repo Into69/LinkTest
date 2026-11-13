@@ -210,10 +210,12 @@ sealed class MainForm : Form
 
         var strip = new StatusStrip();
         strip.Items.Add(_status);
+        strip.Items.Add(BuildVersionMenu());
 
         Controls.Add(right);
         Controls.Add(left);
         Controls.Add(strip);
+        Controls.Add(BuildUpdateBanner());
 
         Load += (_, _) =>
         {
@@ -551,6 +553,117 @@ sealed class MainForm : Form
             };
         }
         _tunnelView.EndUpdate();
+    }
+
+    // ------------------------------------------------------------------ updates
+
+    readonly Panel _banner = new() { Dock = DockStyle.Top, Height = 40, Visible = false, BackColor = Color.FromArgb(255, 244, 206), Padding = new Padding(8, 4, 8, 4) };
+    readonly Label _bannerText = new() { AutoSize = true, Margin = new Padding(0, 8, 12, 0) };
+    readonly Button _bannerInstall = new() { Text = "Install and restart", AutoSize = true };
+    readonly ToolStripMenuItem _autoCheckItem = new("Check for updates at startup") { CheckOnClick = true };
+    UpdateInfo? _pendingUpdate;
+    bool _updating;
+
+    Control BuildUpdateBanner()
+    {
+        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, BackColor = Color.Transparent };
+        var notes = new LinkLabel { Text = "What's new", AutoSize = true, Margin = new Padding(12, 8, 12, 0) };
+        var later = new Button { Text = "Later", AutoSize = true };
+        notes.LinkClicked += (_, _) => OpenUrl(_pendingUpdate?.PageUrl ?? Updater.ProjectUrl);
+        later.Click += (_, _) => _banner.Visible = false;
+        _bannerInstall.Click += async (_, _) => { if (_pendingUpdate != null) await InstallUpdateAsync(_pendingUpdate); };
+        flow.Controls.AddRange(new Control[] { _bannerText, _bannerInstall, notes, later });
+        _banner.Controls.Add(flow);
+        return _banner;
+    }
+
+    ToolStripItem BuildVersionMenu()
+    {
+        var menu = new ToolStripDropDownButton($"v{Updater.CurrentVersion}") { Alignment = ToolStripItemAlignment.Right };
+        var check = new ToolStripMenuItem("Check for updates now");
+        check.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
+        _autoCheckItem.Checked = _settings.CheckForUpdates;
+        _autoCheckItem.CheckedChanged += (_, _) => { _settings.CheckForUpdates = _autoCheckItem.Checked; _settings.Save(); };
+        var page = new ToolStripMenuItem("Project page on GitHub");
+        page.Click += (_, _) => OpenUrl(Updater.ProjectUrl);
+        menu.DropDownItems.AddRange(new ToolStripItem[] { check, _autoCheckItem, new ToolStripSeparator(), page });
+        Shown += async (_, _) => { if (_settings.CheckForUpdates) await CheckForUpdatesAsync(manual: false); };
+        return menu;
+    }
+
+    async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (_updating) return;
+        try
+        {
+            var info = await Updater.CheckAsync(UpdateChannel.Client);
+            if (info == null)
+            {
+                if (manual) MessageBox.Show(this, $"You are running the latest version ({Updater.CurrentVersion}).", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            _pendingUpdate = info;
+            _bannerText.Text = $"LinkTest {info.Tag} is available (you have {Updater.CurrentVersion}).";
+            _bannerInstall.Enabled = true;
+            _banner.Visible = true;
+            if (manual) await InstallUpdateAsync(info, ask: true);
+        }
+        catch (Exception e)
+        {
+            if (manual) MessageBox.Show(this, "Could not check for updates: " + e.Message, "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            else AppendLog("Update check failed: " + e.Message);
+        }
+    }
+
+    async Task InstallUpdateAsync(UpdateInfo info, bool ask = false)
+    {
+        if (_updating) return;
+        if (ask && MessageBox.Show(this, $"LinkTest {info.Tag} is available (you have {Updater.CurrentVersion}).\n\nInstall it and restart now?",
+                "LinkTest update", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        if (_session != null)
+        {
+            MessageBox.Show(this, "Stop the running test before updating.", "LinkTest update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (!Updater.CanSelfUpdate(UpdateChannel.Client, out var why))
+        {
+            if (MessageBox.Show(this, $"This copy can't update itself: {why}.\n\nOpen the download page instead?", "LinkTest update",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                OpenUrl(info.PageUrl);
+            return;
+        }
+
+        _updating = true;
+        _bannerInstall.Enabled = false;
+        _start.Enabled = false;
+        _banner.Visible = true;
+        try
+        {
+            var progress = new Progress<double>(p => _bannerText.Text = $"Downloading LinkTest {info.Tag}… {p:P0}");
+            string zip = await Updater.DownloadAsync(info, progress);
+            _bannerText.Text = "Installing…";
+            SaveUiToSettings();
+            await Task.Run(() => Updater.Apply(zip, UpdateChannel.Client));
+            Updater.Restart(Array.Empty<string>());
+            Close();
+        }
+        catch (Exception e)
+        {
+            _bannerText.Text = $"Update to {info.Tag} failed.";
+            _bannerInstall.Enabled = true;
+            _start.Enabled = _session == null;
+            AppendLog("Update failed: " + e.Message);
+            MessageBox.Show(this, "Update failed: " + e.Message, "LinkTest update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _updating = false;
+        }
+    }
+
+    static void OpenUrl(string url)
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
     }
 
     // ------------------------------------------------------------------ helpers

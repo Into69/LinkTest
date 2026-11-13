@@ -1,0 +1,8 @@
+<Project>
+  <!-- Single version for all programs. Release builds override it from the git tag (vX.Y.Z). -->
+  <PropertyGroup>
+    <Version>1.1.0</Version>
+    <Product>LinkTest</Product>
+    <Company>LinkTest</Company>
+  </PropertyGroup>
+</Project>

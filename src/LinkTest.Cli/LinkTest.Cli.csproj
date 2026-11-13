@@ -7,7 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>LinkTestCli</AssemblyName>
     <RootNamespace>LinkTest.Cli</RootNamespace>
-    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
