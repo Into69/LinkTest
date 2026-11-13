@@ -25,6 +25,7 @@ sealed class ServerForm : Form
     readonly Button _startBtn = new() { Text = "Start server", Height = 36, Width = 150 };
     readonly Button _stopBtn = new() { Text = "Stop server", Height = 36, Width = 120, Enabled = false };
     readonly Button _firewallBtn = new() { Text = "Add firewall rules…", Height = 36, AutoSize = true };
+    readonly Button _updateBtn = new() { Text = "Check for updates", Height = 36, AutoSize = true };
     readonly Label _state = new() { AutoSize = true, Font = new Font("Segoe UI Semibold", 11f), Text = "Stopped", ForeColor = Color.DimGray };
     readonly Label _addresses = new() { AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(900, 0) };
     readonly ListView _sessions = new() { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill };
@@ -66,6 +67,13 @@ sealed class ServerForm : Form
         _startBtn.Click += (_, _) => StartServer();
         _stopBtn.Click += async (_, _) => await StopServerAsync();
         _firewallBtn.Click += (_, _) => AddFirewallRules();
+        _updateBtn.Click += async (_, _) =>
+        {
+            _updateBtn.Enabled = false;
+            _updateBtn.Text = "Checking…";
+            try { await CheckForUpdatesAsync(manual: true); }
+            finally { _updateBtn.Text = "Check for updates"; _updateBtn.Enabled = true; }
+        };
         _updateLink.Click += async (_, _) => { if (_update != null) await InstallUpdateAsync(_update, ask: true); };
         FormClosing += OnClosing;
         // Load (not Shown): Shown never fires when the window starts minimized.
@@ -110,7 +118,8 @@ sealed class ServerForm : Form
         _startBtn.BackColor = Color.FromArgb(0, 120, 212); _startBtn.ForeColor = Color.White; _startBtn.FlatStyle = FlatStyle.Flat;
         _startBtn.EnabledChanged += (_, _) => _startBtn.BackColor = _startBtn.Enabled ? Color.FromArgb(0, 120, 212) : Color.FromArgb(200, 205, 212);
         _state.Margin = new Padding(16, 8, 8, 0);
-        actions.Controls.AddRange(new Control[] { _startBtn, _stopBtn, _firewallBtn, _state });
+        actions.Controls.AddRange(new Control[] { _startBtn, _stopBtn, _firewallBtn, _updateBtn, _state });
+        _tips.SetToolTip(_updateBtn, "Check GitHub for a newer version now and offer to install it.");
         _tips.SetToolTip(_firewallBtn, "Adds inbound Windows Firewall rules for the port (asks for Administrator rights).");
 
         var addrPanel = new Panel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6) };
