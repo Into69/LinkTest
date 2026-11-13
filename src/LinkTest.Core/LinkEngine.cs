@@ -17,6 +17,20 @@ public sealed class LinkEngine
 
     /// <summary>Supplies retransmission counters of this side's sending TCP sockets.</summary>
     public Func<(long retransBytes, int timeouts)>? TcpInfoProvider { get; set; }
+    /// <summary>Supplies full kernel TCP figures for this side's sending sockets (detailed statistics).</summary>
+    public Func<TcpDetail?>? TcpDetailProvider { get; set; }
+
+    /// <summary>Detailed report on this class: what this side received, and how its own sending went.</summary>
+    /// <param name="final">At the end of a test: leave out the silence since the peer stopped sending.</param>
+    public ClassDetail BuildDetail(long nowUs, bool final = false) => new()
+    {
+        TimeUs = nowUs,
+        Rx = Rx.Detail(nowUs, final),
+        TxPackets = TxPackets,
+        TxBytes = TxBytes,
+        SenderLagEvents = SenderLagEvents,
+        Tcp = TcpDetailProvider?.Invoke(),
+    };
 
     long _txPackets, _txBytes, _senderLagEvents;
     public long TxPackets => Interlocked.Read(ref _txPackets);

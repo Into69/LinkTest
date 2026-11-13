@@ -33,6 +33,7 @@ sealed class HistoryForm : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(8), WrapContents = true };
         buttons.Controls.Add(Btn("Open report", OpenReport));
         buttons.Controls.Add(Btn("Save report as…", SaveReport));
+        buttons.Controls.Add(Btn("Save PDF report…", () => { if (Selected is { } s) Try("load the result", () => SavePdf(this, s.Load(), _store.Folder)); }));
         buttons.Controls.Add(Btn("Export CSV…", ExportCsv));
         buttons.Controls.Add(Btn("Open results folder", () => Open(_store.Folder)));
         buttons.Controls.Add(Btn("Delete", Delete));
@@ -108,6 +109,28 @@ sealed class HistoryForm : Form
         if (Selected is not { } s) return;
         using var d = new SaveFileDialog { FileName = s.Summary.SuggestedFileName("csv"), Filter = "CSV (*.csv)|*.csv", Title = "Export per-second figures" };
         if (d.ShowDialog(this) == DialogResult.OK) Try("export the CSV", () => File.WriteAllText(d.FileName, s.Load().ToCsv()));
+    }
+
+    /// <summary>Asks where to save the PDF traffic report, writes it and opens it.</summary>
+    public static void SavePdf(IWin32Window owner, TestRecord r, string folder)
+    {
+        using var d = new SaveFileDialog
+        {
+            FileName = r.SuggestedFileName("pdf"), Filter = "PDF report (*.pdf)|*.pdf", Title = "Save PDF report",
+            InitialDirectory = Directory.Exists(folder) ? folder : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        };
+        if (d.ShowDialog(owner) != DialogResult.OK) return;
+        try
+        {
+            Cursor.Current = Cursors.WaitCursor;
+            File.WriteAllBytes(d.FileName, PdfReportBuilder.Build(r));
+            Open(d.FileName);
+        }
+        catch (Exception e)
+        {
+            MessageBox.Show(owner, "Could not save the PDF report:\n" + e.Message, "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally { Cursor.Current = Cursors.Default; }
     }
 
     void Try(string what, Action a)

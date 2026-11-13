@@ -220,4 +220,33 @@ public class IntegrationTests
             PathTracer.MaxParallelHops = oldParallel;
         }
     }
+
+    [Fact]
+    public async Task DetailedStatistics_ComeFromBothEnds()
+    {
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false };
+        await session.StartAsync("127.0.0.1", _server.Port, null,
+            new TestConfig { Protocol = TransportKind.Mixed, UdpSharePct = 50, UpMbps = 10, DownMbps = 10, BaselineSec = 0 },
+            Array.Empty<TunnelProfile>(), 10, CancellationToken.None, ipLookup: false);
+        StatSample s = null!;
+        for (int i = 0; i < 4; i++) { await Task.Delay(1000); s = session.TakeSample(); }
+        await session.StopAsync("test done");
+
+        var live = s.Detail!;
+        Assert.True(live.ServerDetail);
+        Assert.Equal(4, live.Columns.Count);
+        var d = session.Record!.Detail!;
+        var udpUp = d.Columns.Single(c => c.Transport == TransportKind.Udp && c.Upstream);
+        var udpDown = d.Columns.Single(c => c.Transport == TransportKind.Udp && !c.Upstream);
+        Assert.True(udpUp.Rx.Packets > 100, "server-side receive detail reached the client");
+        Assert.True(udpUp.Rx.LossEvents > 0 && udpDown.Rx.LossEvents > 0, "artificial loss shows up as loss events both ways");
+        Assert.InRange(udpUp.LossPct, 5, 15);
+        Assert.True(udpDown.TxPackets > 100, "server's sender counters reached the client");
+        var tcpUp = d.Columns.Single(c => c.Transport == TransportKind.Tcp && c.Upstream);
+        var tcpDown = d.Columns.Single(c => c.Transport == TransportKind.Tcp && !c.Upstream);
+        Assert.True(tcpUp.Rx.Bytes > 0 && tcpDown.Rx.Bytes > 0);
+        Assert.NotNull(tcpUp.Tcp);       // client's kernel figures
+        Assert.NotNull(tcpDown.Tcp);     // server's kernel figures, sent over the control connection
+        Assert.True(tcpDown.Tcp!.Sockets > 0);
+    }
 }

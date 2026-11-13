@@ -4,6 +4,7 @@ using LinkTest.Core.Tunnels;
 
 // Headless client: LinkTestCli <server> [options]
 var inv = CultureInfo.InvariantCulture;
+try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }   // arrows, ≥, ≤ in the tables
 Updater.CleanupOldFiles();
 if (args.Length > 0 && args[0] is "--version") { Console.WriteLine(Updater.CurrentVersion); return 0; }
 if (args.Length > 0 && args[0] is "--update" or "--update-from")
@@ -60,6 +61,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --no-mtu           skip the path-MTU test
           --no-trace         no automatic traceroutes
           --report FILE      write an HTML report (charts, tables, traceroutes) when the test ends
+          --pdf FILE         write a PDF report on how well each type of traffic was carried
           --json FILE        save the full test record as JSON
         """);
     return 0;
@@ -67,7 +69,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
 
 string host = args[0];
 int port = Protocol.DefaultPort;
-string? key = null, csvPath = null, tunnelSel = "default", reportPath = null, jsonPath = null;
+string? key = null, csvPath = null, tunnelSel = "default", reportPath = null, jsonPath = null, pdfPath = null;
 double loss = 0;
 bool ipLookup = true, measureMtu = true, autoTrace = true;
 var cfg = new TestConfig { DurationSec = 10 };
@@ -101,6 +103,7 @@ for (int i = 1; i < args.Length; i++)
         case "--no-mtu": measureMtu = false; break;
         case "--no-trace": autoTrace = false; break;
         case "--report": reportPath = Next(); break;
+        case "--pdf": pdfPath = Next(); break;
         case "--json": jsonPath = Next(); break;
         default: Console.Error.WriteLine($"Unknown option {args[i]}"); return 1;
     }
@@ -185,8 +188,15 @@ while (!cts.IsCancellationRequested && !ended.Task.IsCompleted)
 if (!ended.Task.IsCompleted) await session.StopAsync(cts.IsCancellationRequested ? "Interrupted" : "Duration reached");
 if (session.Record is { } rec)
 {
+    if (rec.Detail is { Columns.Count: > 0 } detail)
+    {
+        Console.WriteLine();
+        Console.WriteLine("===== Detailed statistics (upload measured by the server, download by this client) =====");
+        Console.Write(detail.Format());
+    }
     try
     {
+        if (pdfPath != null) { File.WriteAllBytes(pdfPath, PdfReportBuilder.Build(rec)); Console.WriteLine("PDF report written to " + Path.GetFullPath(pdfPath)); }
         if (reportPath != null) { File.WriteAllText(reportPath, ReportBuilder.Build(rec)); Console.WriteLine("Report written to " + Path.GetFullPath(reportPath)); }
         if (jsonPath != null) { File.WriteAllText(jsonPath, rec.ToJson()); Console.WriteLine("Record written to " + Path.GetFullPath(jsonPath)); }
     }

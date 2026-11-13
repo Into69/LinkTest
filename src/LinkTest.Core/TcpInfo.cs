@@ -64,4 +64,97 @@ public static class TcpInfo
             if (TryGet(s, out var i)) { r += i.BytesRetrans; t += i.TimeoutEpisodes; }
         return (r, t);
     }
+
+    /// <summary>Full kernel figures for a set of sending sockets (null when none could be read).</summary>
+    public static TcpDetail? Detail(IEnumerable<Socket> sockets)
+    {
+        var list = new List<TcpDetail>();
+        foreach (var s in sockets)
+        {
+            try
+            {
+                var d = OperatingSystem.IsWindows() ? DetailWindows(s)
+                      : OperatingSystem.IsLinux() || OperatingSystem.IsAndroid() ? DetailLinux(s) : null;
+                if (d != null) list.Add(d);
+            }
+            catch { }
+        }
+        return list.Count == 0 ? null : Combine(list);
+    }
+
+    /// <summary>Sums counters and windows; averages RTT; takes the lowest min-RTT and MSS.</summary>
+    public static TcpDetail Combine(IReadOnlyList<TcpDetail> list)
+    {
+        static long? Sum(IEnumerable<long?> v) { long t = 0; bool any = false; foreach (var x in v) if (x is long y) { t += y; any = true; } return any ? t : null; }
+        var rtts = list.Where(x => x.RttUs != null).Select(x => x.RttUs!.Value).ToList();
+        var mins = list.Where(x => x.MinRttUs is > 0).Select(x => x.MinRttUs!.Value).ToList();
+        var mss = list.Where(x => x.Mss is > 0).Select(x => x.Mss!.Value).ToList();
+        return new TcpDetail
+        {
+            Sockets = list.Sum(x => x.Sockets),
+            RttUs = rtts.Count > 0 ? rtts.Average() : null,
+            MinRttUs = mins.Count > 0 ? mins.Min() : null,
+            CwndBytes = Sum(list.Select(x => x.CwndBytes)),
+            InFlightBytes = Sum(list.Select(x => x.InFlightBytes)),
+            BytesSent = Sum(list.Select(x => x.BytesSent)),
+            BytesRetrans = Sum(list.Select(x => x.BytesRetrans)),
+            FastRetrans = Sum(list.Select(x => x.FastRetrans)),
+            Timeouts = Sum(list.Select(x => x.Timeouts)),
+            DupAcksIn = Sum(list.Select(x => x.DupAcksIn)),
+            ReorderEvents = Sum(list.Select(x => x.ReorderEvents)),
+            Mss = mss.Count > 0 ? mss.Min() : null,
+        };
+    }
+
+    /// <summary>TCP_INFO_v0 (Windows 10 1703+).</summary>
+    static TcpDetail? DetailWindows(Socket s)
+    {
+        var b = new byte[88];
+        int n = s.IOControl(SIO_TCP_INFO, BitConverter.GetBytes(0), b);
+        if (n < 85) return null;
+        uint U(int o) => BinaryPrimitives.ReadUInt32LittleEndian(b.AsSpan(o));
+        uint minRtt = U(24);
+        return new TcpDetail
+        {
+            Sockets = 1,
+            Mss = (int)U(4),
+            RttUs = U(20),
+            MinRttUs = minRtt is 0 or uint.MaxValue ? null : minRtt,
+            InFlightBytes = U(28),
+            CwndBytes = U(32),
+            BytesSent = (long)BinaryPrimitives.ReadUInt64LittleEndian(b.AsSpan(48)),
+            ReorderEvents = null,                 // Windows reports reordered bytes, not events
+            BytesRetrans = U(68),
+            FastRetrans = U(72),
+            DupAcksIn = U(76),
+            Timeouts = U(80),
+        };
+    }
+
+    /// <summary>struct tcp_info (linux/tcp.h).</summary>
+    static TcpDetail? DetailLinux(Socket s)
+    {
+        var buf = new byte[232];
+        int n = s.GetRawSocketOption(6, 11, buf);
+        if (n < 104) return null;
+        var b = buf.AsSpan();
+        uint U(int o) => BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(o));
+        int mss = (int)U(16);
+        long totalRetrans = U(100);
+        return new TcpDetail
+        {
+            Sockets = 1,
+            Mss = mss,
+            RttUs = U(68),
+            MinRttUs = n >= 152 && U(148) is > 0 and < uint.MaxValue ? U(148) : null,
+            CwndBytes = (long)U(80) * mss,                                        // tcpi_snd_cwnd is in segments
+            InFlightBytes = (long)U(24) * mss,                                    // tcpi_unacked segments
+            BytesSent = n >= 208 ? (long)BinaryPrimitives.ReadUInt64LittleEndian(b[200..]) : null,
+            BytesRetrans = n >= 216 ? (long)BinaryPrimitives.ReadUInt64LittleEndian(b[208..]) : totalRetrans * mss,
+            FastRetrans = null,
+            Timeouts = b[4],                                                       // current RTO backoff
+            DupAcksIn = null,
+            ReorderEvents = n >= 224 ? U(220) : null,                              // tcpi_reord_seen (kernel 4.19+)
+        };
+    }
 }

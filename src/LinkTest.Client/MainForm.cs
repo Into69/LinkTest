@@ -33,6 +33,7 @@ sealed class MainForm : Form
     readonly Button _start = new() { Text = "Start test", Height = 36, Dock = DockStyle.Fill };
     readonly Button _stop = new() { Text = "Stop", Height = 36, Dock = DockStyle.Fill, Enabled = false };
     readonly Button _history = new() { Text = "History", Height = 36, Dock = DockStyle.Fill };
+    readonly Button _pdf = new() { Text = "PDF report…", Height = 36, Dock = DockStyle.Fill };
     readonly ToolStripStatusLabel _reportLink = new() { IsLink = true, Visible = false, Text = "Open report" };
     ResultStore Results => new(_settings.ResultsFolder);
     TestRecord? _lastRecord;
@@ -57,6 +58,7 @@ sealed class MainForm : Form
     readonly LineChart _chartLat = new() { Title = "Latency", Unit = "ms", Dock = DockStyle.Fill };
     readonly LineChart _chartLoss = new() { Title = "Packet loss", Unit = "%", Dock = DockStyle.Fill, MinYMax = 1 };
     readonly ListView _tunnelView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
+    readonly ListView _statsView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true, HeaderStyle = ColumnHeaderStyle.Nonclickable, ShowItemToolTips = true };
     readonly ListView _classView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
     readonly TabControl _bottomTabs = new() { Dock = DockStyle.Fill };
     readonly ListView _connView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true, HeaderStyle = ColumnHeaderStyle.Nonclickable };
@@ -204,20 +206,26 @@ sealed class MainForm : Form
         left.Controls.Add(form);
 
         // Start / Stop live in their own panel under the scrolling settings, so they are always visible.
-        var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
-        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         _start.Font = new Font(Font, FontStyle.Bold);
         _start.BackColor = Color.FromArgb(0, 120, 212); _start.ForeColor = Color.White; _start.FlatStyle = FlatStyle.Flat;
         _start.EnabledChanged += (_, _) => _start.BackColor = _start.Enabled ? Color.FromArgb(0, 120, 212) : Color.FromArgb(200, 205, 212);
         buttons.Controls.Add(_start);
         buttons.Controls.Add(_stop);
         buttons.Controls.Add(_history);
+        buttons.Controls.Add(_pdf);
         _history.Click += (_, _) => { using var h = new HistoryForm(Results); h.ShowDialog(this); };
-        _tips.SetToolTip(_history, "Saved test results: open or export the HTML report, export CSV.");
-        var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(10, 8, 10, 8), BackColor = Color.FromArgb(235, 238, 242) };
+        _tips.SetToolTip(_history, "Saved test results: open or export the HTML or PDF report, export CSV.");
+        _pdf.Click += (_, _) => SavePdfReport();
+        _tips.SetToolTip(_pdf, "PDF report on how well the link carried each type of simulated traffic, for the last finished test " +
+                               "(any saved test: History). Available when no test is running.");
+        // Only between tests: Start is enabled exactly when no test is running (or connecting) and no update is installing.
+        _start.EnabledChanged += (_, _) => _pdf.Enabled = _start.Enabled;
+        var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 100, Padding = new Padding(10, 8, 10, 8), BackColor = Color.FromArgb(235, 238, 242) };
         actionBar.Controls.Add(buttons);
 
         var leftColumn = new Panel { Dock = DockStyle.Left, Width = 340 };
@@ -263,10 +271,14 @@ sealed class MainForm : Form
         classesTab.Controls.Add(_classView);
         _connView.Columns.Add("Item", (int)(190 * DeviceDpi / 96f));
         _connView.Columns.Add("Value", (int)(720 * DeviceDpi / 96f));
+        var statsTab = new TabPage("Statistics");
+        statsTab.Controls.Add(_statsView);
+        _tips.SetToolTip(_statsView, "Cumulative since the start. Upload columns are measured by the server and sent to the client; download columns are measured here. TCP rows come from the sending side's kernel.");
         var connTab = new TabPage("Connection");
         connTab.Controls.Add(_connView);
         _bottomTabs.TabPages.Add(tunnelsTab);
         _bottomTabs.TabPages.Add(classesTab);
+        _bottomTabs.TabPages.Add(statsTab);
         _bottomTabs.TabPages.Add(connTab);
         var pathTab = new TabPage("Path (MTU / traceroute)");
         pathTab.Controls.Add(_pathView);
@@ -550,6 +562,7 @@ sealed class MainForm : Form
         _chartTput.Clear(); _chartLat.Clear(); _chartLoss.Clear();
         _tunnelView.Items.Clear();
         _classView.Items.Clear();
+        ShowDetail(null);
         _connView.Items.Clear();
         foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tBloat, _tTime }) t.Set("–");
         _pathView.Text = _mtu.Checked || _trace.Checked ? "Waiting for the test to start…" : "Path MTU and traceroute are turned off (Diagnostics settings).";
@@ -614,6 +627,7 @@ sealed class MainForm : Form
         _csvLog?.Dispose();
         _csvLog = null;
         OnTickTunnels();   // final tunnel state
+        if (session.Record?.Detail is { } finalDetail) ShowDetail(finalDetail);
         AppendLog("Test ended: " + reason);
         if (session.Record is { } rec)
         {
@@ -669,10 +683,70 @@ sealed class MainForm : Form
 
         OnTickTunnels();
         UpdateClassView(s);
+        ShowDetail(s.Detail);
         try { _csvLog?.Write(s, session.TunnelSummaryLine()); } catch { }
 
         if (session.Config.DurationSec > 0 && s.ElapsedSec >= session.Config.DurationSec)
             _ = session.StopAsync("Duration reached");
+    }
+
+    /// <summary>Saves the PDF report of the last finished test (or the newest saved one) and opens it.</summary>
+    void SavePdfReport()
+    {
+        if (_session != null) return;   // only between tests
+        TestRecord? rec = _lastRecord;
+        if (rec == null)
+        {
+            try { rec = Results.List().FirstOrDefault()?.Load(); } catch { }
+        }
+        if (rec == null)
+        {
+            MessageBox.Show(this, "There is no finished test yet. Run a test first, or pick a saved test in History.", "LinkTest",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        HistoryForm.SavePdf(this, rec, Results.Folder);
+    }
+
+    /// <summary>Fills the Statistics tab (rows = figures, columns = UDP/TCP × upload/download), updating in place.</summary>
+    void ShowDetail(LinkDetail? d)
+    {
+        if (d == null || d.Columns.Count == 0)
+        {
+            _statsView.Items.Clear();
+            _statsView.Groups.Clear();
+            return;
+        }
+        var rows = d.Rows();
+        string[] titles = d.Columns.Select(c => c.Title + (c.Available ? "" : " (server < 1.8)")).ToArray();
+        bool rebuild = _statsView.Columns.Count != titles.Length + 1 || _statsView.Items.Count != rows.Count
+            || !titles.Select((t, i) => _statsView.Columns[i + 1].Text == t).All(x => x);
+        _statsView.BeginUpdate();
+        if (rebuild)
+        {
+            _statsView.Items.Clear();
+            _statsView.Groups.Clear();
+            _statsView.Columns.Clear();
+            _statsView.Columns.Add("Statistic", (int)(250 * DeviceDpi / 96f));
+            foreach (var t in titles) _statsView.Columns.Add(t, (int)(190 * DeviceDpi / 96f), HorizontalAlignment.Right);
+            foreach (var (section, name, values, hint) in rows)
+            {
+                var g = _statsView.Groups.Cast<ListViewGroup>().FirstOrDefault(x => x.Header == section)
+                        ?? _statsView.Groups.Add(section, section);
+                var it = new ListViewItem(new[] { name }.Concat(values).ToArray(), g) { ToolTipText = hint };
+                _statsView.Items.Add(it);
+            }
+        }
+        else
+        {
+            for (int r = 0; r < rows.Count; r++)
+            {
+                var it = _statsView.Items[r];
+                for (int c = 0; c < rows[r].values.Length; c++)
+                    if (it.SubItems[c + 1].Text != rows[r].values[c]) it.SubItems[c + 1].Text = rows[r].values[c];
+            }
+        }
+        _statsView.EndUpdate();
     }
 
     void OnTickTunnels()

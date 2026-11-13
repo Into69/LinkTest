@@ -41,6 +41,7 @@ public sealed class ClientSession : IDisposable
     readonly List<TraceResult> _traces = new();
     readonly BufferbloatMeter _bloat = new();
     readonly SampleSeries _series = new();
+    readonly List<ClassSeries> _classSeries = new();
     readonly List<string> _events = new();
     double _mosSum, _maxGap;
     int _mosCount;
@@ -79,6 +80,8 @@ public sealed class ClientSession : IDisposable
         public readonly List<Socket> Tcp = new();
         public EngineMeter Meter = null!;
         public StatsReport? Final;
+        /// <summary>Latest detailed statistics from the server for this class (1.8+ servers).</summary>
+        public volatile ClassDetail? ServerDetail;
         public bool IsUdp => Def.Transport == TransportKind.Udp;
     }
 
@@ -182,6 +185,7 @@ public sealed class ClientSession : IDisposable
                     tcpOrdinal++;
                     var socks = rt.Tcp;
                     rt.Eng.TcpInfoProvider = () => TcpInfo.Sum(socks);
+                    rt.Eng.TcpDetailProvider = () => TcpInfo.Detail(socks);
                     rt.Meter = new EngineMeter(rt.Eng, () => TcpInfo.Sum(socks));
                 }
                 _classes.Add(rt);
@@ -461,7 +465,13 @@ public sealed class ClientSession : IDisposable
                         if (m.Tunnel >= 0 && m.Tunnel < _tunnels.Count)
                             _tunnels[m.Tunnel].OnResponse(m.Seq, (ushort)m.Kind, m.Time, Clock.NowUs);
                         break;
+                    case "stats":
+                        if (!_final.Task.IsCompleted && m.Details != null)
+                            for (int i = 0; i < m.Details.Count && i < _classes.Count; i++) _classes[i].ServerDetail = m.Details[i];
+                        break;
                     case "final":
+                        if (m.Details != null)
+                            for (int i = 0; i < m.Details.Count && i < _classes.Count; i++) _classes[i].ServerDetail = m.Details[i];
                         if (m.ClassReports != null)
                             for (int i = 0; i < m.ClassReports.Count && i < _classes.Count; i++) _classes[i].Final = m.ClassReports[i];
                         else
@@ -568,6 +578,7 @@ public sealed class ClientSession : IDisposable
             LoadedRttMs = loaded ? _bloat.LoadedMs : double.NaN,
             BloatGrade = loaded ? _bloat.CurrentGrade : null,
             Mos = StatSample.EstimateMos(double.IsFinite(p.RttMs) ? p.RttMs : p.SmoothedRttMs, worstJit, worstLoss),
+            Detail = BuildDetail(now),
         };
 
         // Trouble triggers a traceroute (rate limited inside MaybeTrace).
@@ -581,6 +592,11 @@ public sealed class ClientSession : IDisposable
         lock (_series)
         {
             _series.Add(sample);
+            for (int i = 0; i < classStats.Count; i++)
+            {
+                if (_classSeries.Count <= i) _classSeries.Add(new ClassSeries { Name = classStats[i].Name });
+                _classSeries[i].Add(classStats[i]);
+            }
             if (double.IsFinite(sample.Mos)) { _mosSum += sample.Mos; _mosCount++; }
             double g = Math.Max(Ui0(sample.UpMaxGapMs), Ui0(sample.DownMaxGapMs));
             if (g > _maxGap) _maxGap = g;
@@ -588,6 +604,17 @@ public sealed class ClientSession : IDisposable
         return sample;
 
         static double Ui0(double v) => double.IsFinite(v) ? v : 0;
+    }
+
+    /// <summary>Server supports detailed statistics (1.8+).</summary>
+    public bool ServerSendsDetail => _serverVersion >= new Version(1, 8, 0);
+
+    /// <summary>Detailed UDP / TCP statistics in both directions, from both ends' reports.</summary>
+    public LinkDetail BuildDetail(long? nowUs = null, bool final = false)
+    {
+        long now = nowUs ?? Clock.NowUs;
+        double dur = Math.Max(1e-3, ((_stopUs > 0 ? _stopUs : now) - _startUs) / 1e6);
+        return LinkDetail.Build(_classes.Select(c => (c.Def.Transport, c.ServerDetail, c.Eng.BuildDetail(now, final))), dur, ServerSendsDetail);
     }
 
     async Task RunMtuTestAsync()
@@ -821,10 +848,12 @@ public sealed class ClientSession : IDisposable
             Traces = Traces.ToList(),
             Tunnels = _tunnels.Select(t => t.GetStatus(now)).ToList(),
             Classes = classes,
+            Detail = BuildDetail(now, final: true),
         };
         lock (_series)
         {
             record.Samples = _series.Clone();
+            record.ClassSeries = _classSeries.Select(c => c.Clone()).ToList();
             record.MaxGapMs = _maxGap;
             record.MosAvg = _mosCount > 0 ? _mosSum / _mosCount : double.NaN;
         }

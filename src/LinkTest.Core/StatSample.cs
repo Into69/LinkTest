@@ -67,6 +67,9 @@ public sealed class StatSample
     /// <summary>Estimated VoIP MOS (ITU-T G.107 simplified) from RTT, worst jitter and worst loss.</summary>
     public double Mos { get; init; } = double.NaN;
 
+    /// <summary>Detailed UDP / TCP statistics in both directions, cumulative since the start (1.8+).</summary>
+    public LinkDetail? Detail { get; init; }
+
     public static double EstimateMos(double rttMs, double jitterMs, double lossPct)
     {
         if (!double.IsFinite(rttMs)) return double.NaN;

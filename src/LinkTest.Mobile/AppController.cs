@@ -100,6 +100,9 @@ sealed class AppController
         StateChanged?.Invoke();
     }
 
+    /// <summary>Detailed UDP/TCP statistics: live while running, final after the test.</summary>
+    public LinkDetail? Detail { get; private set; }
+
     public async Task<string?> StartAsync()
     {
         if (Busy) return null;
@@ -119,6 +122,7 @@ sealed class AppController
         _traces.Clear();
         Connecting = true;
         LastSample = null;
+        Detail = null;
         Connection = null;
         SetStatus($"Connecting to {st.Host}…");
         _connectCts = new CancellationTokenSource();
@@ -168,6 +172,7 @@ sealed class AppController
         if (s == null || !s.IsRunning) return;
         var sample = s.TakeSample();
         LastSample = sample;
+        Detail = sample.Detail;
         Sampled?.Invoke(sample);
         if (_serviceRunning && (int)sample.ElapsedSec % 5 == 0)
             try { TestService.Control.Update(NotificationText(sample)); } catch { }
@@ -199,6 +204,7 @@ sealed class AppController
         if (Session != session) return;
         _timer?.Stop();
         Log("Test ended: " + reason);
+        if (session.Record?.Detail is { } finalDetail) Detail = finalDetail;
         if (session.Record is { } rec)
         {
             try { Results.Save(rec); Log("Result saved - see the History tab to share the report."); HistoryChanged?.Invoke(); }

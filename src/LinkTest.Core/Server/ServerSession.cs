@@ -39,6 +39,7 @@ public sealed class ServerSession : IDisposable
     bool _started, _disposed;
     DateTime _startedAt = DateTime.Now;
     string? _clientVersion;
+    bool _sendDetail;          // client 1.8+ understands the "stats" message
     volatile IpInfo? _clientInfo;
     int _dscpWarned;
 
@@ -90,7 +91,9 @@ public sealed class ServerSession : IDisposable
             var cfg = hello.Config ?? new TestConfig();
             cfg.Normalize();
             // Clients before 1.6 do not know about the idle baseline (their configs default to it).
-            if (!Updater.TryParseVersion(hello.AppVersion ?? "0", out var cv) || cv < new Version(1, 6, 0)) cfg.BaselineSec = 0;
+            if (!Updater.TryParseVersion(hello.AppVersion ?? "0", out var cv)) cv = new Version(0, 0);
+            if (cv < new Version(1, 6, 0)) cfg.BaselineSec = 0;
+            _sendDetail = cv >= new Version(1, 8, 0);
             string? note = null;
             double cap = _host.Options.MaxMbps;
             if (cfg.UpMbps > cap || cfg.DownMbps > cap)
@@ -111,6 +114,7 @@ public sealed class ServerSession : IDisposable
                 {
                     c.TcpOrdinal = ord++;
                     c.Eng.TcpInfoProvider = () => { lock (_lock) return TcpInfo.Sum(c.Tcp.ToArray()); };
+                    c.Eng.TcpDetailProvider = () => { Socket[] socks; lock (_lock) socks = c.Tcp.ToArray(); return TcpInfo.Detail(socks); };
                 }
                 _classes.Add(c);
             }
@@ -132,6 +136,7 @@ public sealed class ServerSession : IDisposable
                 {
                     case "start":
                         Start();
+                        if (_sendDetail) _ = DetailLoopAsync(token);
                         break;
                     case "stop":
                         StopSenders();
@@ -143,6 +148,7 @@ public sealed class ServerSession : IDisposable
                             ClassReports = reports,
                             Report = reports[0],                                   // for 1.2 clients
                             TcpReport = reports.Count == 2 ? reports[1] : null,
+                            Details = _sendDetail ? _classes.Select(c => c.Eng.BuildDetail(now, final: true)).ToList() : null,
                         });
                         break;
                     case "tprobe":
@@ -162,6 +168,22 @@ public sealed class ServerSession : IDisposable
                 _host.Unregister(this);
             }
         }
+    }
+
+    /// <summary>Sends the detailed per-class statistics to the client once a second while the test runs.</summary>
+    async Task DetailLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(ct) && !_senderCts.IsCancellationRequested)
+            {
+                long now = Clock.NowUs;
+                var details = _classes.Select(c => c.Eng.BuildDetail(now)).ToList();
+                if (!_ctrl.TrySend(new ControlMessage { Type = "stats", Details = details })) break;
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     async Task LookupClientAsync(CancellationToken ct)

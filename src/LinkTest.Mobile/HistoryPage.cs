@@ -50,6 +50,12 @@ sealed class HistoryPage : ContentPage
         var view = Btn("View", async () => await ViewAsync(item));
         var share = Btn("Share report", async () => await ShareAsync(item, "html"));
         var csv = Btn("Share CSV", async () => await ShareAsync(item, "csv"));
+        var pdf = Btn("Share PDF", async () =>
+        {
+            if (_app.Busy) { await DisplayAlertAsync("Test running", "PDF reports can be made once the test has finished.", "OK"); return; }
+            await ShareAsync(item, "pdf");
+        });
+        pdf.IsEnabled = !_app.Busy;
         var del = Btn("Delete", async () =>
         {
             if (await DisplayAlertAsync("Delete result", $"Delete the test from {r.StartedAt:g}?", "Delete", "Cancel"))
@@ -59,7 +65,7 @@ sealed class HistoryPage : ContentPage
             }
         });
         del.TextColor = Ui.Bad;
-        var buttons = new FlexLayout { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Start, AlignContent = Microsoft.Maui.Layouts.FlexAlignContent.Start, Children = { view, share, csv, del } };
+        var buttons = new FlexLayout { Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap, AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Start, AlignContent = Microsoft.Maui.Layouts.FlexAlignContent.Start, Children = { view, share, pdf, csv, del } };
         return Ui.Card(new VerticalStackLayout { Spacing = 2, Children = { title, server, figures, buttons } });
     }
 
@@ -83,7 +89,7 @@ sealed class HistoryPage : ContentPage
             await Share.Default.RequestAsync(new ShareFileRequest
             {
                 Title = $"LinkTest report {r.StartedAt:g}",
-                File = new ShareFile(path, ext == "csv" ? "text/csv" : "text/html"),
+                File = new ShareFile(path, ext switch { "csv" => "text/csv", "pdf" => "application/pdf", _ => "text/html" }),
             });
         }
         catch (Exception e) { await DisplayAlertAsync("Share failed", e.Message, "OK"); }

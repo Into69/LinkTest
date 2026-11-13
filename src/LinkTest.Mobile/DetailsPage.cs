@@ -9,6 +9,10 @@ sealed class DetailsPage : ContentPage
     readonly AppController _app = AppController.Instance;
     readonly VerticalStackLayout _tunnels = new() { Spacing = 4 };
     readonly VerticalStackLayout _classes = new() { Spacing = 4 };
+    readonly Grid _stats = new() { ColumnSpacing = 10, RowSpacing = 1, Padding = new Thickness(0, 2) };
+    readonly Label _statsHint = Ui.Hint("Start a test to see detailed UDP / TCP statistics for both directions.");
+    Label[,]? _statCells;
+    string _statShape = "";
     readonly VerticalStackLayout _conn = new() { Spacing = 2 };
     readonly Label _mtu = new() { FontSize = 12 };
     readonly Label _trace = new() { FontFamily = "monospace", FontSize = 10, LineBreakMode = LineBreakMode.NoWrap };
@@ -26,6 +30,9 @@ sealed class DetailsPage : ContentPage
                 {
                     Ui.Header("VPN tunnels"), _tunnels,
                     Ui.Header("Traffic classes"), _classes,
+                    Ui.Header("Statistics"),
+                    Ui.Hint("Upload is measured by the server, download by this phone; TCP rows come from the sender's kernel. Scroll sideways for all columns."),
+                    Ui.Card(new VerticalStackLayout { Children = { _statsHint, new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _stats } } }),
                     Ui.Header("Connection"), Ui.Card(_conn),
                     Ui.Header("Path MTU"), Ui.Card(_mtu),
                     Ui.Header("Traceroute"), Ui.Card(new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _trace }),
@@ -50,8 +57,56 @@ sealed class DetailsPage : ContentPage
     {
         RefreshTunnels();
         RefreshClasses(_app.LastSample);
+        RefreshStats(_app.Detail);
         if (_app.Connection != null) ShowConnection(_app.Connection);
         else if (_conn.Count == 0) _conn.Add(Ui.Hint("Start a test to see addresses, NAT and public-IP details."));
+    }
+
+    void RefreshStats(LinkDetail? d)
+    {
+        _statsHint.IsVisible = d == null || d.Columns.Count == 0;
+        if (d == null || d.Columns.Count == 0) { _stats.Clear(); _statCells = null; _statShape = ""; return; }
+        var rows = d.Rows();
+        string shape = string.Join("|", d.Columns.Select(c => c.Title + c.Available)) + "#" + string.Join("|", rows.Select(r => r.name));
+        if (shape != _statShape)
+        {
+            _statShape = shape;
+            _stats.Clear();
+            _stats.RowDefinitions.Clear();
+            _stats.ColumnDefinitions.Clear();
+            _stats.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            foreach (var _ in d.Columns) _stats.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            int r = 0;
+            _stats.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            for (int c = 0; c < d.Columns.Count; c++)
+                _stats.Add(new Label { Text = d.Columns[c].Title + (d.Columns[c].Available ? "" : "\n(server < 1.8)"), FontSize = 11, FontAttributes = FontAttributes.Bold, HorizontalTextAlignment = TextAlignment.End }, c + 1, r);
+            _statCells = new Label[rows.Count, d.Columns.Count];
+            string? section = null;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (rows[i].section != section)
+                {
+                    section = rows[i].section;
+                    _stats.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                    r++;
+                    var h = new Label { Text = section, FontSize = 12, FontAttributes = FontAttributes.Bold, TextColor = Ui.Accent, Margin = new Thickness(0, 6, 0, 0) };
+                    _stats.Add(h, 0, r);
+                    Grid.SetColumnSpan(h, d.Columns.Count + 1);
+                }
+                _stats.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                r++;
+                _stats.Add(new Label { Text = rows[i].name, FontSize = 11, TextColor = Ui.Muted }, 0, r);
+                for (int c = 0; c < d.Columns.Count; c++)
+                {
+                    var cell = new Label { FontSize = 11, HorizontalTextAlignment = TextAlignment.End };
+                    _statCells[i, c] = cell;
+                    _stats.Add(cell, c + 1, r);
+                }
+            }
+        }
+        for (int i = 0; i < rows.Count; i++)
+            for (int c = 0; c < rows[i].values.Length; c++)
+                if (_statCells![i, c].Text != rows[i].values[c]) _statCells[i, c].Text = rows[i].values[c];
     }
 
     void RefreshTunnels()

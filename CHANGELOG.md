@@ -2,6 +2,38 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.8.0]
+
+### New
+- **Detailed statistics, both directions, UDP and TCP.** The server now sends the client a full report on what
+  it receives once a second. Together with the client's own measurements this gives up to four columns:
+  UDP upload, UDP download, TCP upload and TCP download.
+  - Traffic: packets sent and received, data, average throughput and packet rate, packet sizes, sender lag.
+  - Loss (UDP): lost packets, loss events, longest and average burst, burst-length histogram.
+  - Order (UDP): out-of-order packets and how far they were reordered, duplicates, very late packets.
+  - Timing: jitter (average and peak), one-way delay variation (average, p50 / p95 / p99, max), longest
+    silence, stalls of 100 ms and 1 s or more.
+  - TCP, from the sending side's kernel: RTT and minimum RTT, congestion window, bytes in flight,
+    retransmitted bytes, fast retransmits, retransmission timeouts, duplicate ACKs, reordering, MSS.
+- Shown on a new *Statistics* tab (desktop client) and under *Details* (Android), printed by the CLI at the
+  end of a test, saved with each result, and included in the HTML report.
+
+- **PDF traffic report.** A *PDF report…* button on the client, enabled only between tests, makes a PDF of the last
+  finished test. *Save PDF report…* in History does the same for any saved test; Android has *Share PDF*, and the CLI
+  has `--pdf FILE`. The report focuses on how well the link carried each type of simulated traffic:
+  - a verdict for each traffic type (maintained, marginal or not maintained), judged against what that kind of
+    traffic needs: voice and video ≤ 1% loss, ≤ 30 ms jitter and ≤ 300 ms RTT; network control ≤ 0.5% loss;
+    bulk and best effort ≥ 90% of their rate; and so on (ITU-T G.114 / Y.1541, RFC 4594);
+  - how much of the target rate was delivered, loss (or TCP retransmissions), jitter and RTT per traffic type;
+  - "within limits" over time: the share of seconds each type met its requirements, with a timeline strip for
+    each and a list of what fell short and for how long;
+  - VPN tunnel stability, throughput / latency / loss charts, the detailed statistics, and the test setup.
+- Saved results now keep per-second figures for each traffic class.
+
+### Compatibility
+- Needs a 1.8 server for the upload columns; with an older server they show "n/a". Older clients are
+  unaffected (the server only sends the new report to 1.8+ clients).
+
 ## [1.7.0]
 
 ### New

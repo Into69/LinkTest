@@ -7,7 +7,7 @@ namespace LinkTest.Core;
 /// <summary>Message on the TCP control connection (newline-delimited JSON).</summary>
 /// <remarks>
 /// Types: hello (C→S), welcome / error (S→C), start, stop (C→S), final (S→C, carries the server's
-/// receive report), tprobe (C→S) / tprobe_r (S→C) for TCP-based tunnel simulations, info (either way).
+/// receive report), stats (S→C, detailed statistics once a second, 1.8+), tprobe (C→S) / tprobe_r (S→C) for TCP-based tunnel simulations, info (either way).
 /// </remarks>
 public sealed class ControlMessage
 {
@@ -32,6 +32,8 @@ public sealed class ControlMessage
     public StatsReport? TcpReport { get; set; }
     /// <summary>Final receive report per traffic class, in class order (1.3+).</summary>
     public List<StatsReport>? ClassReports { get; set; }
+    /// <summary>"stats" (S→C, once a second) and "final": the server's detailed per-class statistics (1.8+).</summary>
+    public List<ClassDetail>? Details { get; set; }
 }
 
 public sealed class ControlChannel : IDisposable

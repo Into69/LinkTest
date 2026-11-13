@@ -43,7 +43,11 @@ public sealed class TestRecord
     public List<TunnelStatus> Tunnels { get; set; } = new();
     public List<ClassSummary> Classes { get; set; } = new();
     public SampleSeries Samples { get; set; } = new();
+    /// <summary>Per traffic class, per second (1.8+; empty in older records). Same order as <see cref="Classes"/>.</summary>
+    public List<ClassSeries> ClassSeries { get; set; } = new();
     public List<string> Events { get; set; } = new();
+    /// <summary>Detailed UDP / TCP statistics in both directions at the end of the test (1.8+; null in older records).</summary>
+    public LinkDetail? Detail { get; set; }
 
     public string Mode => Config.DscpSimulate ? "DSCP simulate"
         : Config.Protocol == TransportKind.Mixed ? $"Mixed {Config.UdpSharePct:0}% UDP" : Config.Protocol.ToString().ToUpperInvariant();
@@ -114,6 +118,38 @@ public sealed class SampleSeries
     };
 }
 
+/// <summary>Per-second figures of one traffic class (column-wise; NaN = not measured that second).</summary>
+public sealed class ClassSeries
+{
+    public string Name { get; set; } = "";
+    public List<double> Up { get; set; } = new();
+    public List<double> Down { get; set; } = new();
+    public List<double> LossUp { get; set; } = new();
+    public List<double> LossDown { get; set; } = new();
+    public List<double> JitUp { get; set; } = new();
+    public List<double> JitDown { get; set; } = new();
+    public List<double> Rtt { get; set; } = new();
+    /// <summary>TCP retransmitted kilobytes in the second (upload / download).</summary>
+    public List<double> RetransUpKB { get; set; } = new();
+    public List<double> RetransDownKB { get; set; } = new();
+
+    public void Add(ClassStat k)
+    {
+        static double R(double v) => double.IsFinite(v) ? Math.Round(v, 3) : double.NaN;
+        Up.Add(R(k.UpMbps)); Down.Add(R(k.DownMbps));
+        LossUp.Add(R(k.UpLossPct)); LossDown.Add(R(k.DownLossPct));
+        JitUp.Add(R(k.UpJitterMs)); JitDown.Add(R(k.DownJitterMs));
+        Rtt.Add(R(k.RttMs));
+        RetransUpKB.Add(Math.Round(k.UpRetransBytes / 1000.0, 1)); RetransDownKB.Add(Math.Round(k.DownRetransBytes / 1000.0, 1));
+    }
+
+    public ClassSeries Clone() => new()
+    {
+        Name = Name, Up = Up.ToList(), Down = Down.ToList(), LossUp = LossUp.ToList(), LossDown = LossDown.ToList(),
+        JitUp = JitUp.ToList(), JitDown = JitDown.ToList(), Rtt = Rtt.ToList(), RetransUpKB = RetransUpKB.ToList(), RetransDownKB = RetransDownKB.ToList(),
+    };
+}
+
 /// <summary>A saved test as listed: its file and the record without the bulky parts (samples, events, traceroutes).</summary>
 public sealed record SavedResult(string Path, TestRecord Summary)
 {
@@ -166,6 +202,8 @@ public sealed class ResultStore
                     r.Samples = new SampleSeries();      // freshly read: strip it in place for the index
                     r.Events = new List<string>();
                     r.Traces = new List<TraceResult>();
+                    r.Detail = null;
+                    r.ClassSeries = new List<ClassSeries>();
                     e = new IndexEntry { Length = fi.Length, WriteTicks = fi.LastWriteTimeUtc.Ticks, Summary = r };
                     changed = true;
                 }

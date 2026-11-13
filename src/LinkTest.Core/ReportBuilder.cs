@@ -14,12 +14,13 @@ public static class ReportBuilder
     static string E(string? s) => WebUtility.HtmlEncode(s ?? "");
     static string N(double v, string fmt = "0.##") => double.IsFinite(v) ? v.ToString(fmt, Inv) : "–";
 
-    /// <summary>Writes the HTML report (<paramref name="ext"/> "html") or the CSV ("csv") into a folder; returns the file path.</summary>
+    /// <summary>Writes the HTML report (<paramref name="ext"/> "html"), the PDF traffic report ("pdf") or the CSV ("csv") into a folder; returns the file path.</summary>
     public static string WriteFile(TestRecord r, string folder, string ext)
     {
         Directory.CreateDirectory(folder);
         string path = Path.Combine(folder, r.SuggestedFileName(ext));
-        File.WriteAllText(path, ext == "csv" ? r.ToCsv() : Build(r));
+        if (ext == "pdf") File.WriteAllBytes(path, PdfReportBuilder.Build(r));
+        else File.WriteAllText(path, ext == "csv" ? r.ToCsv() : Build(r));
         return path;
     }
 
@@ -130,6 +131,28 @@ public static class ReportBuilder
                           $"<td class=n>{(udp ? N(k.DownLossPct) + "%" : "–")}</td><td class=n>{U(k.JitterDownMs, "0.##", " ms")}</td><td class=n>{U(k.RttAvgMs, "0.0", " ms")}</td></tr>");
             }
             sb.Append("</table></div>");
+        }
+
+        if (r.Detail is { Columns.Count: > 0 } d)
+        {
+            sb.Append("<h2>Detailed statistics</h2><p class=\"sub\">Upload is measured by the server, download by the client; " +
+                      "TCP rows come from the sending side's kernel. Cumulative over the whole test.</p><div class=\"panel\"><table><tr><th></th>");
+            foreach (var col in d.Columns) sb.Append($"<th class=n>{E(col.Title)}</th>");
+            sb.Append("</tr>");
+            string? section = null;
+            foreach (var (sec, name, values, hint) in d.Rows())
+            {
+                if (sec != section)
+                {
+                    section = sec;
+                    sb.Append($"<tr><th colspan=\"{d.Columns.Count + 1}\" style=\"padding-top:12px;color:var(--accent)\">{E(sec)}</th></tr>");
+                }
+                sb.Append($"<tr><td{(hint.Length > 0 ? $" title=\"{E(hint)}\"" : "")}>{E(name)}</td>");
+                foreach (var v in values) sb.Append($"<td class=n>{E(v)}</td>");
+                sb.Append("</tr>");
+            }
+            sb.Append("</table></div>");
+            if (!d.ServerDetail) sb.Append("<p class=\"sub\">The server was older than 1.8, so the upload columns have no detail.</p>");
         }
 
         if (r.Tunnels.Count > 0)
