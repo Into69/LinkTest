@@ -252,7 +252,7 @@ sealed class MainForm : Form
     }
 
     static NumericUpDown Num(decimal min, decimal max, int decimals) =>
-        new() { Minimum = min, Maximum = max, DecimalPlaces = decimals, ThousandsSeparator = decimals == 0 && max > 9999, Increment = decimals > 0 ? 1 : 1 };
+        new() { Minimum = min, Maximum = max, DecimalPlaces = decimals, ThousandsSeparator = false, Increment = 1 };
 
     static ComboBox Combo(params string[] items)
     {
