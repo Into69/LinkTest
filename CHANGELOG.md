@@ -28,7 +28,7 @@ Each release's notes on GitHub are taken from its section below.
 
 ### Changed
 - Test averages include the idle baseline, and the summary says so.
-- GitHub Actions steps updated to v5. Release notes now come from this changelog.
+- GitHub Actions steps updated to versions that run on the current Node runtime. Release notes now come from this changelog.
 
 ### Compatibility
 - 1.5 clients work with a 1.6 server, and vice versa.
