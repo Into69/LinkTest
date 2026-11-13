@@ -53,15 +53,26 @@ public sealed record TraceResult(DateTime At, string Reason, IPAddress Target, I
             string addr = h.Address == null ? "*" : h.Hostname != null ? $"{h.Address} ({h.Hostname})" : h.Address.ToString();
             if (addr.Length > 40) addr = addr[..39] + "…";
             sb.AppendLine($"  {h.Ttl,3}  {addr,-40} {(h.Received == 0 && h.Address == null ? "  -" : $"{h.LossPct,5:0}%")} " +
-                          $"{(h.Received > 0 ? h.AvgRttMs.ToString("0.0") : "-"),8} {(h.Received > 0 ? h.MaxRttMs.ToString("0.0") : "-"),8}");
+                          $"{(h.Received > 0 && double.IsFinite(h.AvgRttMs) ? h.AvgRttMs.ToString("0.0") : "-"),8} {(h.Received > 0 && double.IsFinite(h.MaxRttMs) ? h.MaxRttMs.ToString("0.0") : "-"),8}");
         }
         return sb.ToString();
     }
 }
 
-/// <summary>ICMP traceroute using increasing TTLs (all hops probed in parallel).</summary>
+/// <summary>Result of probing one TTL: replying address, probes sent / answered, RTTs (NaN when unknown).</summary>
+public sealed record HopProbeResult(IPAddress? Address, int Sent, int Received, double AvgRttMs, double MaxRttMs, bool ReachedTarget, string? Error);
+
+/// <summary>ICMP traceroute using increasing TTLs (hops probed in parallel).</summary>
 public static class PathTracer
 {
+    /// <summary>
+    /// Platform-specific hop prober (target, ttl, probes, timeoutMs). Android sets this: .NET's Ping falls back to
+    /// launching the ping tool there, which is unsafe to run many times in parallel.
+    /// </summary>
+    public static Func<IPAddress, int, int, int, CancellationToken, Task<HopProbeResult>>? CustomProber { get; set; }
+    /// <summary>How many hops are probed at the same time.</summary>
+    public static int MaxParallelHops { get; set; } = 30;
+
     public static async Task<TraceResult> TraceAsync(IPAddress target, string reason, int maxHops = 30, int probesPerHop = 5,
         int timeoutMs = 1000, bool resolveNames = true, CancellationToken ct = default)
     {
@@ -69,7 +80,20 @@ public static class PathTracer
         var at = DateTime.Now;
         try
         {
-            var tasks = Enumerable.Range(1, maxHops).Select(ttl => ProbeHopAsync(target, ttl, probesPerHop, timeoutMs, ct)).ToArray();
+            using var gate = new SemaphoreSlim(Math.Max(1, MaxParallelHops));
+            async Task<HopProbe> Gated(int ttl)
+            {
+                await gate.WaitAsync(ct);
+                try
+                {
+                    if (CustomProber == null) return await ProbeHopAsync(target, ttl, probesPerHop, timeoutMs, ct);
+                    var r = await CustomProber(target, ttl, probesPerHop, timeoutMs, ct);
+                    var hop = new TraceHop(ttl, r.Address, null, r.Sent, r.Received, r.AvgRttMs, r.MaxRttMs);
+                    return new HopProbe(hop, r.ReachedTarget, r.Received == 0 ? r.Error : null);
+                }
+                finally { gate.Release(); }
+            }
+            var tasks = Enumerable.Range(1, maxHops).Select(Gated).ToArray();
             var hops = (await Task.WhenAll(tasks)).ToList();
 
             if (hops.All(h => h.Error != null))

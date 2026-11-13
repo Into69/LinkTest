@@ -105,4 +105,11 @@ public static class Json
     };
 
     public static readonly JsonSerializerOptions Pretty = new(Options) { WriteIndented = true };
+
+    /// <summary>For saved test records: allows NaN ("not measured") and IP addresses. Not used on the wire.</summary>
+    public static readonly JsonSerializerOptions Records = new(Options)
+    {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        Converters = { new IPAddressJsonConverter() },
+    };
 }

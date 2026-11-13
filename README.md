@@ -107,6 +107,20 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
   - Loss on a single hop that doesn't continue to later hops is usually ICMP rate limiting, not real loss.
   - Many servers block ping, so the last hop may not answer.
 
+## Results and reports
+
+Every finished test is saved: settings, per-second figures, summary, tunnels, traffic classes, connection
+details, MTU and traceroutes.
+
+- **Desktop client:** results are saved to `Documents\LinkTest\Results`. *History* (next to Start/Stop)
+  lists them; from there you can open or save the **HTML report**, export **CSV**, or delete results. After
+  each test an *Open report* link appears in the status bar.
+- **Android:** the *History* tab can view a report, share it (email, Drive, chat apps…) or share the CSV.
+- **CLI:** `--report report.html` and/or `--json record.json`.
+
+The report is a single HTML file with no scripts or external resources. It is easy to attach to a ticket for
+an ISP or vendor, and opens in any browser, in light or dark mode.
+
 ## Development
 
 - `dotnet test tests/LinkTest.Tests` runs about 50 unit and end-to-end tests. The end-to-end tests start a
@@ -126,8 +140,14 @@ from your browser or file manager the first time. Then:
 - **Details** tab: tunnels, traffic classes, and connection and IP information.
 - **START / STOP** is in the top bar, so it is available from every tab.
 
-DSCP marking works without special permissions on Android. The screen stays on during a test (this can be
-turned off in Settings), because Android may pause apps that are in the background.
+DSCP marking works without special permissions on Android.
+
+**Long tests:** with *Keep running in the background* on (the default), a test keeps going with the screen
+off or while you use other apps. Android shows a notification with the live figures, and the app holds the
+CPU and Wi-Fi awake until the test stops.
+
+**Tunnel timers** can be edited under Settings > *Edit* next to each tunnel. The editor shows roughly how long
+a dead link takes to detect.
 
 **Updates:** the app checks GitHub, downloads the new APK and opens the Android installer; you confirm the
 install. Every release APK is signed with the same release key, which is stored in the repository secrets

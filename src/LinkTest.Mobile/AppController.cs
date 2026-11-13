@@ -14,7 +14,9 @@ sealed class MobileSettings
     public double ArtificialLossPct { get; set; }
     public bool IpLookup { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
-    public bool KeepScreenOn { get; set; } = true;
+    public bool KeepScreenOn { get; set; }
+    /// <summary>Foreground service + notification so tests keep running with the screen off.</summary>
+    public bool KeepRunningInBackground { get; set; } = true;
     public bool MeasureMtu { get; set; } = true;
     public bool AutoTraceroute { get; set; } = true;
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
@@ -60,6 +62,10 @@ sealed class AppController
     public IReadOnlyList<string> LogLines => _log;
 
     public event Action? StateChanged;
+    /// <summary>A result was saved or deleted.</summary>
+    public event Action? HistoryChanged;
+    public ResultStore Results { get; } = new(Path.Combine(FileSystem.AppDataDirectory, "results"));
+    bool _serviceRunning;
     public event Action<StatSample>? Sampled;
     public event Action<string>? LogAdded;
     public event Action<ConnectionInfo>? ConnectionChanged;
@@ -139,6 +145,7 @@ sealed class AppController
         Session = session;
         Connecting = false;
         if (st.KeepScreenOn) DeviceDisplay.Current.KeepScreenOn = true;
+        if (st.KeepRunningInBackground) await StartServiceAsync(session);
         _timer ??= CreateTimer();
         _timer.Start();
         SetStatus($"Running · {session.Config}");
@@ -160,6 +167,8 @@ sealed class AppController
         var sample = s.TakeSample();
         LastSample = sample;
         Sampled?.Invoke(sample);
+        if (_serviceRunning && (int)sample.ElapsedSec % 5 == 0)
+            try { TestService.Control.Update(NotificationText(sample)); } catch { }
         if (s.Config.DurationSec > 0 && sample.ElapsedSec >= s.Config.DurationSec)
             _ = s.StopAsync("Duration reached");
     }
@@ -188,11 +197,45 @@ sealed class AppController
         if (Session != session) return;
         _timer?.Stop();
         Log("Test ended: " + reason);
+        if (session.Record is { } rec)
+        {
+            try { Results.Save(rec); Log("Result saved - see the History tab to share the report."); HistoryChanged?.Invoke(); }
+            catch (Exception e) { Log("Could not save the result: " + e.Message); }
+        }
         session.Dispose();
         Session = null;
         DeviceDisplay.Current.KeepScreenOn = false;
+        StopService();
         SetStatus("Idle - " + reason);
     }
+
+    async Task StartServiceAsync(ClientSession session)
+    {
+        try
+        {
+            // Android 13+: the ongoing notification needs permission (the service still runs if refused).
+            if (OperatingSystem.IsAndroidVersionAtLeast(33))
+                await Permissions.RequestAsync<Permissions.PostNotifications>();
+            TestService.Control.Start($"Testing {Settings.Host} · {session.Config}");
+            _serviceRunning = true;
+        }
+        catch (Exception e) { Log("Background mode unavailable: " + e.Message); }
+    }
+
+    void StopService()
+    {
+        if (!_serviceRunning) return;
+        _serviceRunning = false;
+        try { TestService.Control.Stop(); } catch { }
+    }
+
+    static string NotificationText(StatSample s)
+    {
+        var el = TimeSpan.FromSeconds(s.ElapsedSec);
+        return $"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00} · ↑ {Ui.Mbps(s.UpMbps)} ↓ {Ui.Mbps(s.DownMbps)} · loss {Ui.Fmt(s.UpLossPct, "0.#")}/{Ui.Fmt(s.DownLossPct, "0.#")}% · RTT {Ui.Ms(s.RttMs)}";
+    }
+
+    public void NotifyHistoryChanged() => HistoryChanged?.Invoke();
 
     /// <summary>Tunnel and class status for the Details page (live while running).</summary>
     public IReadOnlyList<TunnelStatus> TunnelStatuses()

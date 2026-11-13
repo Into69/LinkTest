@@ -59,13 +59,15 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --baseline SEC     idle seconds at the start for the bufferbloat grade (default 3, 0 = off)
           --no-mtu           skip the path-MTU test
           --no-trace         no automatic traceroutes
+          --report FILE      write an HTML report (charts, tables, traceroutes) when the test ends
+          --json FILE        save the full test record as JSON
         """);
     return 0;
 }
 
 string host = args[0];
 int port = Protocol.DefaultPort;
-string? key = null, csvPath = null, tunnelSel = "default";
+string? key = null, csvPath = null, tunnelSel = "default", reportPath = null, jsonPath = null;
 double loss = 0;
 bool ipLookup = true, measureMtu = true, autoTrace = true;
 var cfg = new TestConfig { DurationSec = 10 };
@@ -98,6 +100,8 @@ for (int i = 1; i < args.Length; i++)
         case "--baseline": cfg.BaselineSec = int.Parse(Next()); break;
         case "--no-mtu": measureMtu = false; break;
         case "--no-trace": autoTrace = false; break;
+        case "--report": reportPath = Next(); break;
+        case "--json": jsonPath = Next(); break;
         default: Console.Error.WriteLine($"Unknown option {args[i]}"); return 1;
     }
 }
@@ -179,4 +183,13 @@ while (!cts.IsCancellationRequested && !ended.Task.IsCompleted)
 }
 
 if (!ended.Task.IsCompleted) await session.StopAsync(cts.IsCancellationRequested ? "Interrupted" : "Duration reached");
+if (session.Record is { } rec)
+{
+    try
+    {
+        if (reportPath != null) { File.WriteAllText(reportPath, ReportBuilder.Build(rec)); Console.WriteLine("Report written to " + Path.GetFullPath(reportPath)); }
+        if (jsonPath != null) { File.WriteAllText(jsonPath, rec.ToJson()); Console.WriteLine("Record written to " + Path.GetFullPath(jsonPath)); }
+    }
+    catch (Exception e) { Console.Error.WriteLine("Could not write report: " + e.Message); }
+}
 return 0;

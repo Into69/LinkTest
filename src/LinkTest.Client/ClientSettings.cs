@@ -19,6 +19,7 @@ sealed class ClientSettings
     public bool IpLookup { get; set; } = true;
     public bool MeasureMtu { get; set; } = true;
     public bool AutoTraceroute { get; set; } = true;
+    public string ResultsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LinkTest", "Results");
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinkTest", "client-settings.json");
 

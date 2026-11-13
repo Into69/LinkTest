@@ -23,6 +23,7 @@ sealed class MainTabs : Microsoft.Maui.Controls.TabbedPage
         Children.Add(new LivePage());
         Children.Add(_settings);
         Children.Add(new DetailsPage());
+        Children.Add(new HistoryPage());
         Children.Add(new LogPage());
 
         _startStop.Clicked += async (_, _) => await StartStopAsync();

@@ -32,6 +32,10 @@ sealed class MainForm : Form
     readonly TextBox _csvFolder = new();
     readonly Button _start = new() { Text = "Start test", Height = 36, Dock = DockStyle.Fill };
     readonly Button _stop = new() { Text = "Stop", Height = 36, Dock = DockStyle.Fill, Enabled = false };
+    readonly Button _history = new() { Text = "History", Height = 36, Dock = DockStyle.Fill };
+    readonly ToolStripStatusLabel _reportLink = new() { IsLink = true, Visible = false, Text = "Open report" };
+    ResultStore Results => new(_settings.ResultsFolder);
+    TestRecord? _lastRecord;
     readonly List<Control> _inputs = new();
 
     // live view
@@ -200,15 +204,19 @@ sealed class MainForm : Form
         left.Controls.Add(form);
 
         // Start / Stop live in their own panel under the scrolling settings, so they are always visible.
-        var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        var buttons = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1 };
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
+        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
         buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _start.Font = new Font(Font, FontStyle.Bold);
         _start.BackColor = Color.FromArgb(0, 120, 212); _start.ForeColor = Color.White; _start.FlatStyle = FlatStyle.Flat;
         _start.EnabledChanged += (_, _) => _start.BackColor = _start.Enabled ? Color.FromArgb(0, 120, 212) : Color.FromArgb(200, 205, 212);
         buttons.Controls.Add(_start);
         buttons.Controls.Add(_stop);
+        buttons.Controls.Add(_history);
+        _history.Click += (_, _) => { using var h = new HistoryForm(Results); h.ShowDialog(this); };
+        _tips.SetToolTip(_history, "Saved test results: open or export the HTML report, export CSV.");
         var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(10, 8, 10, 8), BackColor = Color.FromArgb(235, 238, 242) };
         actionBar.Controls.Add(buttons);
 
@@ -278,6 +286,8 @@ sealed class MainForm : Form
 
         var strip = new StatusStrip();
         strip.Items.Add(_status);
+        strip.Items.Add(_reportLink);
+        _reportLink.Click += (_, _) => { if (_lastRecord != null) HistoryForm.OpenReport(_lastRecord); };
         strip.Items.Add(BuildVersionMenu());
 
         Controls.Add(right);
@@ -601,6 +611,18 @@ sealed class MainForm : Form
         _csvLog = null;
         OnTickTunnels();   // final tunnel state
         AppendLog("Test ended: " + reason);
+        if (session.Record is { } rec)
+        {
+            try
+            {
+                string path = Results.Save(rec);
+                _lastRecord = rec;
+                _reportLink.Text = $"Open report ({rec.StartedAt:HH:mm})";
+                _reportLink.Visible = true;
+                AppendLog($"Result saved to {path} - open it from History or the status bar.");
+            }
+            catch (Exception e) { AppendLog("Could not save the result: " + e.Message); }
+        }
         session.Dispose();
         _session = null;
         _start.Enabled = true;

@@ -76,6 +76,19 @@ public class IntegrationTests
     }
 
     [Fact]
+    public async Task FinishedTest_ProducesRecordAndReport()
+    {
+        var (session, _, _) = await RunAsync(new TestConfig { Protocol = TransportKind.Udp, UpMbps = 10, DownMbps = 10, BaselineSec = 0 }, 3);
+        var r = session.Record;
+        Assert.NotNull(r);
+        Assert.Equal(3, r!.Samples.T.Count);
+        Assert.InRange(r.DownMbpsAvg, 8, 12);
+        Assert.Equal("test done", r.EndReason);
+        Assert.Contains("Link quality report", ReportBuilder.Build(r));
+        Assert.Equal(r.Id, TestRecord.FromJson(r.ToJson())!.Id);
+    }
+
+    [Fact]
     public async Task Tcp_WithParallelStreams()
     {
         var (_, s, _) = await RunAsync(new TestConfig { Protocol = TransportKind.Tcp, Streams = 3, UpMbps = 30, DownMbps = 30, BaselineSec = 0 }, 4);

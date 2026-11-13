@@ -2,6 +2,38 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.7.0]
+
+### New
+- **Saved results.** Every finished test is saved automatically. Each saved test holds:
+  - settings and per-second figures;
+  - the summary, tunnel and traffic-class results;
+  - connection and IP details, MTU and traceroutes;
+  - the event log.
+
+  Desktop results go to `Documents\LinkTest\Results`.
+- **Shareable HTML report.** One self-contained file that opens in any browser and is easy to email to an
+  ISP or vendor. It has no scripts or external resources, and works in light and dark mode. It contains:
+  - key figures, and throughput, latency and loss charts;
+  - settings and connection details;
+  - traffic-class, tunnel, MTU and traceroute tables;
+  - the full event log.
+- **Desktop client:**
+  - a *History* window (next to Start/Stop) to open or save reports, export CSV, open the folder, and delete;
+  - an *Open report* link in the status bar after each test.
+- **Android:**
+  - a *History* tab to view a report, share it, share CSV, or delete a result;
+  - **background testing:** a foreground service with a live status notification keeps long tests running
+    with the screen off or in other apps. It holds the CPU and Wi-Fi awake while the test runs and can be
+    turned off in Settings. The screen-on option now defaults to off;
+  - **tunnel timers can be edited** (Settings > tunnel > Edit), with a "detected after about N s" preview and
+    a restore-preset button.
+- **CLI:** `--report FILE` (HTML report) and `--json FILE` (full record).
+
+### Fixed
+- Android: traceroute could crash the app. .NET started many `ping` processes in parallel, which its runtime
+  can't handle on Android; it now uses Android's process API, six hops at a time.
+
 ## [1.6.0]
 
 ### New

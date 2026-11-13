@@ -6,6 +6,7 @@ public static class MauiProgram
     {
         var builder = MauiApp.CreateBuilder();
         builder.UseMauiApp<App>();
+        AndroidPing.Register();
         return builder.Build();
     }
 }

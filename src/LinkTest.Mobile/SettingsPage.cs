@@ -20,7 +20,7 @@ sealed class SettingsPage : ContentPage
     readonly Entry _up = Num(true), _down = Num(true), _size = Num(), _burstOn = Num(), _burstOff = Num(), _streams = Num(), _duration = Num();
     readonly Picker _profile = new() { ItemsSource = Enum.GetNames<TrafficProfile>() };
     readonly Picker _dscp = new() { ItemsSource = DscpItems };
-    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new();
+    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _bgSw = new();
     readonly Entry _baseline = Num();
     readonly List<(CheckBox box, int index)> _tunnels = new();
     readonly VerticalStackLayout _form;
@@ -60,12 +60,31 @@ sealed class SettingsPage : ContentPage
         _form.Add(Ui.Hint("Each checked tunnel sends real keepalive and handshake probes with its own timers; it drops only if the link loses enough of them."));
         for (int i = 0; i < st.Tunnels.Count; i++)
         {
+            int idx = i;
             var box = new CheckBox { IsChecked = st.Tunnels[i].Enabled, Color = Ui.Accent };
+            var name = new Label { Text = st.Tunnels[i].Name, VerticalOptions = LayoutOptions.Center, FontSize = 14, LineBreakMode = LineBreakMode.TailTruncation };
+            var edit = new Button { Text = "Edit", FontSize = 13, Padding = new Thickness(12, 0), HeightRequest = 40, VerticalOptions = LayoutOptions.Center, BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent };
+            edit.Clicked += async (_, _) =>
+            {
+                if (_app.Busy) return;
+                var current = st.Tunnels[idx];
+                await Navigation.PushAsync(new TunnelEditPage(current, edited =>
+                {
+                    edited.Enabled = box.IsChecked;
+                    st.Tunnels[idx] = edited;
+                    name.Text = edited.Name;
+                    st.Save();
+                }));
+            };
             _tunnels.Add((box, i));
-            _form.Add(new HorizontalStackLayout { Children = { box, new Label { Text = st.Tunnels[i].Name, VerticalOptions = LayoutOptions.Center, FontSize = 14 } } });
+            var row = new Grid { ColumnDefinitions = { new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto) } };
+            row.Add(box, 0); row.Add(name, 1); row.Add(edit, 2);
+            _form.Add(row);
         }
 
         _form.Add(Ui.Header("App"));
+        SwitchRow("Keep running in the background (notification)", _bgSw);
+        _form.Add(Ui.Hint("Keeps long tests going with the screen off or while using other apps. Android shows a notification while it runs."));
         SwitchRow("Keep the screen on during a test", _keepOn);
         SwitchRow("Check for updates at startup", _updates);
         _form.Add(Ui.Hint($"LinkTest {Updater.CurrentVersion} · {Updater.ProjectUrl}"));
@@ -131,6 +150,7 @@ sealed class SettingsPage : ContentPage
             : Math.Max(0, Array.FindIndex(DscpItems, d => int.TryParse(d.Split(' ')[0], out var v) && v == c.Dscp));
         _duration.Text = c.DurationSec.ToString(CultureInfo.InvariantCulture);
         _keepOn.IsToggled = st.KeepScreenOn;
+        _bgSw.IsToggled = st.KeepRunningInBackground;
         _baseline.Text = c.BaselineSec.ToString(CultureInfo.InvariantCulture);
         _mtuSw.IsToggled = st.MeasureMtu;
         _traceSw.IsToggled = st.AutoTraceroute;
@@ -160,6 +180,7 @@ sealed class SettingsPage : ContentPage
         c.DurationSec = Int(_duration, c.DurationSec, 0, 864000);
         foreach (var (box, i) in _tunnels) st.Tunnels[i].Enabled = box.IsChecked;
         st.KeepScreenOn = _keepOn.IsToggled;
+        st.KeepRunningInBackground = _bgSw.IsToggled;
         c.BaselineSec = Int(_baseline, c.BaselineSec, 0, 60);
         st.MeasureMtu = _mtuSw.IsToggled;
         st.AutoTraceroute = _traceSw.IsToggled;

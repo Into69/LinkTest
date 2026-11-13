@@ -40,6 +40,15 @@ public sealed class ClientSession : IDisposable
 
     readonly List<TraceResult> _traces = new();
     readonly BufferbloatMeter _bloat = new();
+    readonly SampleSeries _series = new();
+    readonly List<string> _events = new();
+    double _mosSum, _maxGap;
+    int _mosCount;
+    string _host = "";
+    string? _serverAppVersion;
+
+    /// <summary>The saved-result record, available once the test has stopped.</summary>
+    public TestRecord? Record { get; private set; }
     Version _serverVersion = new(0, 0, 0);
     int _tracing;
     long _lastTraceUs;
@@ -112,6 +121,7 @@ public sealed class ClientSession : IDisposable
             config.Normalize();
             var ip = await ResolveAsync(host, ct);
             ServerEndPoint = new IPEndPoint(ip, port);
+            _host = host;
             Emit($"Connecting to {host} ({ip}) port {port}…");
 
             var ctrlSock = await ConnectTcpAsync(ServerEndPoint, ct);
@@ -140,6 +150,7 @@ public sealed class ClientSession : IDisposable
             SessionId = welcome.SessionId;
             Config = welcome.Config ?? config;
             Updater.TryParseVersion(welcome.AppVersion ?? "0", out _serverVersion);
+            _serverAppVersion = welcome.AppVersion;
             if (_serverVersion < new Version(1, 6, 0))
             {
                 // Older servers don't pause their downstream for the idle baseline, nor answer MTU probes.
@@ -567,6 +578,13 @@ public sealed class ClientSession : IDisposable
             if (worst >= TraceLossThresholdPct) MaybeTrace($"loss {worst:0.#}%");
             else if (gap >= 1000) MaybeTrace($"{gap / 1000:0.0} s stall");
         }
+        lock (_series)
+        {
+            _series.Add(sample);
+            if (double.IsFinite(sample.Mos)) { _mosSum += sample.Mos; _mosCount++; }
+            double g = Math.Max(Ui0(sample.UpMaxGapMs), Ui0(sample.DownMaxGapMs));
+            if (g > _maxGap) _maxGap = g;
+        }
         return sample;
 
         static double Ui0(double v) => double.IsFinite(v) ? v : 0;
@@ -640,7 +658,9 @@ public sealed class ClientSession : IDisposable
             if (_ctrl != null && _ctrl.TrySend(new ControlMessage { Type = "stop" }))
                 await Task.WhenAny(_final.Task, Task.Delay(3000));
             await Task.Delay(300);   // in-flight download packets
-            Emit(BuildSummary());
+            string summary = BuildSummary();
+            Emit(summary);
+            try { Record = BuildRecord(reason, summary); } catch (Exception e) { Emit("Could not build the test record: " + e.Message); }
         }
         catch (Exception e) { Emit("Error while stopping: " + e.Message); }
         finally
@@ -730,7 +750,87 @@ public sealed class ClientSession : IDisposable
         try { _qos?.Dispose(); } catch { }
     }
 
-    void Emit(string msg) => Log?.Invoke(msg);
+    void Emit(string msg)
+    {
+        lock (_events)
+        {
+            foreach (var line in msg.Replace("\r", "").Split('\n'))
+                _events.Add($"{DateTime.Now:HH:mm:ss}  {line}");
+            if (_events.Count > 5000) _events.RemoveRange(0, 1000);
+        }
+        Log?.Invoke(msg);
+    }
+
+    TestRecord BuildRecord(string reason, string summary)
+    {
+        long now = Clock.NowUs;
+        double dur = Math.Max(1e-3, ((_stopUs > 0 ? _stopUs : now) - _startUs) / 1e6);
+        double downDur = Math.Max(1e-3, ((_finalUs > 0 ? _finalUs : now) - _startUs) / 1e6);
+        var quality = _classes.Any(c => c.IsUdp) ? _classes.Where(c => c.IsUdp).ToList() : _classes;
+        var primary = quality.FirstOrDefault() ?? _classes.First();
+
+        StatsReport? Up(ClassRuntime c) => c.Final ?? (c.Eng.TryGetPeerReport(out var p, out _) ? p : null);
+        long upBytes = 0, upLost = 0, upExp = 0, dnLost = 0, dnExp = 0;
+        foreach (var c in _classes) if (Up(c) is StatsReport u) upBytes += u.Bytes;
+        foreach (var c in quality)
+        {
+            if (Up(c) is StatsReport u) { upLost += u.Lost; upExp += u.UniquePackets() + u.Lost; }
+            var rx = c.Eng.Rx.Snapshot(now);
+            dnLost += rx.Lost; dnExp += rx.UniquePackets() + rx.Lost;
+        }
+        long dnBytes = _classes.Sum(c => c.Eng.Rx.Snapshot(now).Bytes);
+        var rt = primary.Eng.GetRttTotals();
+
+        var classes = _classes.Select(c =>
+        {
+            var u = Up(c);
+            var rx = c.Eng.Rx.Snapshot(now);
+            var crt = c.Eng.GetRttTotals();
+            return new ClassSummary(c.Def.Name, c.Def.Transport, c.Def.Dscp, c.Def.SharePct,
+                u is StatsReport a ? a.Bytes * 8 / dur / 1e6 : double.NaN, u is StatsReport b ? LossPct(b) : double.NaN,
+                rx.Bytes * 8 / downDur / 1e6, LossPct(rx), rx.JitterUs / 1000, crt.Samples > 0 ? crt.AvgUs / 1000 : double.NaN);
+        }).ToList();
+
+        bool loaded = Config.UpMbps + Config.DownMbps > 0;
+        var record = new TestRecord
+        {
+            Id = $"{StartedAt:yyyyMMddHHmmss}-{SessionId:X8}",
+            StartedAt = StartedAt,
+            EndedAt = DateTime.Now,
+            EndReason = reason,
+            AppVersion = Updater.CurrentVersion.ToString(),
+            ServerVersion = _serverAppVersion,
+            Server = $"{_host} ({ServerEndPoint})",
+            Config = Config.Clone(),
+            DurationSec = Math.Round(dur, 1),
+            UpMbpsAvg = upBytes * 8 / dur / 1e6,
+            DownMbpsAvg = dnBytes * 8 / downDur / 1e6,
+            UpLossPct = upExp > 0 ? 100.0 * upLost / upExp : double.NaN,
+            DownLossPct = dnExp > 0 ? 100.0 * dnLost / dnExp : 0,
+            RttAvgMs = rt.Samples > 0 ? rt.AvgUs / 1000 : double.NaN,
+            RttMinMs = rt.Samples > 0 ? rt.MinUs / 1000 : double.NaN,
+            RttMaxMs = rt.Samples > 0 ? rt.MaxUs / 1000 : double.NaN,
+            JitterUpMs = Up(primary) is StatsReport pu ? pu.JitterUs / 1000 : double.NaN,
+            JitterDownMs = primary.Eng.Rx.Snapshot(now).JitterUs / 1000,
+            BloatGrade = loaded ? _bloat.CurrentGrade : null,
+            IdleRttMs = _bloat.IdleMs,
+            LoadedRttMs = loaded ? _bloat.LoadedMs : double.NaN,
+            Summary = summary,
+            Connection = Connection,
+            Mtu = Mtu,
+            Traces = Traces.ToList(),
+            Tunnels = _tunnels.Select(t => t.GetStatus(now)).ToList(),
+            Classes = classes,
+        };
+        lock (_series)
+        {
+            record.Samples = _series;
+            record.MaxGapMs = _maxGap;
+            record.MosAvg = _mosCount > 0 ? _mosSum / _mosCount : double.NaN;
+        }
+        lock (_events) record.Events = _events.ToList();
+        return record;
+    }
 
     public void Dispose()
     {
