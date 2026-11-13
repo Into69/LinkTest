@@ -41,7 +41,8 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
         Usage: LinkTestCli <server-ip-or-fqdn> [options]
                LinkTestCli --update | --update-from PACKAGE.zip | --version
           --port N           server port (default 7447)
-          --udp | --tcp      transport (default udp)
+          --udp | --tcp | --mixed   transport (default udp); mixed = UDP and TCP at once
+          --udp-share PCT    mixed mode: % of each rate carried by UDP (default 30)
           --up MBPS          client -> server rate (default 10)
           --down MBPS        server -> client rate (default 10)
           --size BYTES       packet / write size (default 1400)
@@ -70,6 +71,8 @@ for (int i = 1; i < args.Length; i++)
         case "--port": port = int.Parse(Next()); break;
         case "--udp": cfg.Protocol = TransportKind.Udp; break;
         case "--tcp": cfg.Protocol = TransportKind.Tcp; break;
+        case "--mixed": cfg.Protocol = TransportKind.Mixed; break;
+        case "--udp-share": cfg.UdpSharePct = double.Parse(Next(), inv); break;
         case "--up": cfg.UpMbps = double.Parse(Next(), inv); break;
         case "--down": cfg.DownMbps = double.Parse(Next(), inv); break;
         case "--size": cfg.PacketSize = int.Parse(Next()); break;
@@ -125,7 +128,8 @@ while (!cts.IsCancellationRequested && !ended.Task.IsCompleted)
     static string F(double v, string fmt) => double.IsFinite(v) ? v.ToString(fmt, CultureInfo.InvariantCulture) : "-";
     Console.WriteLine($"{s.ElapsedSec,6:0} | {F(s.TxMbps, "0.00"),9} | {F(s.UpMbps, "0.00"),9} {F(s.UpLossPct, "0.00"),6} {F(s.UpJitterMs, "0.00"),7}{(s.UpReportStale ? "*" : " ")}" +
                       $"| {F(s.DownMbps, "0.00"),9} {F(s.DownLossPct, "0.00"),6} {F(s.DownJitterMs, "0.00"),7} | " +
-                      $"{F(s.RttMs, "0.00"),7} ({F(s.RttMinMs, "0.0")}/{F(s.RttMaxMs, "0.0")}){"",-6} | {F(s.Mos, "0.0")}");
+                      $"{F(s.RttMs, "0.00"),7} ({F(s.RttMinMs, "0.0")}/{F(s.RttMaxMs, "0.0")}){"",-6} | {F(s.Mos, "0.0")}" +
+                      (s.Mixed ? $" | up udp {F(s.UpMbpsUdp, "0.0")} tcp {F(s.UpMbpsTcp, "0.0")}, down udp {F(s.DownMbpsUdp, "0.0")} tcp {F(s.DownMbpsTcp, "0.0")}, tcp rtt {F(s.RttTcpMs, "0.00")}" : ""));
     if (cfg.DurationSec > 0 && s.ElapsedSec >= cfg.DurationSec) break;
 }
 

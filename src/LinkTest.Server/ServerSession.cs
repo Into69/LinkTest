@@ -4,6 +4,9 @@ using LinkTest.Core;
 
 namespace LinkTest.Server;
 
+/// <summary>
+/// Server side of one client test. UDP and TCP traffic each have their own engine; mixed mode runs both.
+/// </summary>
 sealed class ServerSession : IDisposable
 {
     readonly ServerHost _host;
@@ -16,15 +19,15 @@ sealed class ServerSession : IDisposable
     readonly CancellationTokenSource _senderCts = new();
     readonly List<Thread> _senders = new();
     TestConfig _cfg = new();
-    LinkEngine? _engine;
+    LinkEngine? _udpEng, _tcpEng;
     volatile IPEndPoint? _udpEp;
     QosFlow? _qos;
     bool _started, _disposed;
     DateTime _startedAt;
 
-    // status deltas
-    long _prevUs, _prevRxBytes, _prevTxBytes;
-    StatsReport _prevRx;
+    // status deltas, per engine
+    long _prevUs;
+    readonly Dictionary<LinkEngine, (StatsReport rx, long tx)> _prev = new();
 
     public ServerSession(ServerHost host, Socket control, IPEndPoint remote)
     {
@@ -38,6 +41,13 @@ sealed class ServerSession : IDisposable
     public uint Id { get; private set; }
     public IPAddress ClientIp { get; }
     string Tag => $"[{Id:X8} {ClientIp}]";
+
+    IEnumerable<(string name, LinkEngine eng)> Engines()
+    {
+        bool mixed = _udpEng != null && _tcpEng != null;
+        if (_udpEng != null) yield return (mixed ? "UDP " : "", _udpEng);
+        if (_tcpEng != null) yield return (mixed ? "TCP " : "", _tcpEng);
+    }
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -77,9 +87,14 @@ sealed class ServerSession : IDisposable
             _cfg = cfg;
 
             Id = _host.Register(this);
-            _engine = new LinkEngine(Id) { TcpInfoProvider = () => { lock (_lock) return TcpInfo.Sum(_streams.ToArray()); } };
-            _ctrl.Send(new ControlMessage { Type = "welcome", Version = Protocol.Version, SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note });
-            ServerHost.Log($"{Tag} session opened: {cfg}");
+            if (cfg.UsesUdp) _udpEng = new LinkEngine(Id);
+            if (cfg.UsesTcp) _tcpEng = new LinkEngine(Id) { TcpInfoProvider = () => { lock (_lock) return TcpInfo.Sum(_streams.ToArray()); } };
+            _ctrl.Send(new ControlMessage
+            {
+                Type = "welcome", Version = Protocol.Version, AppVersion = Updater.CurrentVersion.ToString(),
+                SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note,
+            });
+            ServerHost.Log($"{Tag} session opened{(hello.AppVersion != null ? $" (client {hello.AppVersion})" : "")}: {cfg}");
 
             while (!token.IsCancellationRequested)
             {
@@ -92,7 +107,14 @@ sealed class ServerSession : IDisposable
                         break;
                     case "stop":
                         StopSenders();
-                        _ctrl.Send(new ControlMessage { Type = "final", Report = _engine.BuildReport(Clock.NowUs) });
+                        long now = Clock.NowUs;
+                        bool mixed = _udpEng != null && _tcpEng != null;
+                        _ctrl.Send(new ControlMessage
+                        {
+                            Type = "final",
+                            Report = (_udpEng ?? _tcpEng)!.BuildReport(now),
+                            TcpReport = mixed ? _tcpEng!.BuildReport(now) : null,
+                        });
                         break;
                     case "tprobe":
                         _ctrl.TrySend(new ControlMessage { Type = "tprobe_r", Tunnel = m.Tunnel, Seq = m.Seq, Kind = m.Kind, Time = m.Time });
@@ -117,7 +139,7 @@ sealed class ServerSession : IDisposable
     {
         lock (_lock)
         {
-            if (_started || _engine == null) return;
+            if (_started) return;
             _started = true;
             _startedAt = DateTime.Now;
             _prevUs = Clock.NowUs;
@@ -127,10 +149,11 @@ sealed class ServerSession : IDisposable
                 if (_qos == null) ServerHost.Log($"{Tag} DSCP not applied: {err}");
             }
 
-            if (_cfg.Protocol == TransportKind.Udp)
+            var (udpDown, _) = _cfg.SplitRate(_cfg.DownMbps);
+            if (_udpEng != null)
             {
-                var spec = SenderSpec.From(_cfg, _cfg.DownMbps);
-                StartSender("udp-tx", 0, spec, (b, n) =>
+                var spec = SenderSpec.From(_cfg, udpDown);
+                StartSender("udp-tx", _udpEng, 0, spec, (b, n) =>
                 {
                     var ep = _udpEp;
                     if (ep == null) return false;   // wait until the client's first datagram tells us where to send
@@ -138,10 +161,7 @@ sealed class ServerSession : IDisposable
                     return true;
                 });
             }
-            else
-            {
-                for (int i = 0; i < _streams.Count; i++) StartStream(_streams[i], i);
-            }
+            for (int i = 0; i < _streams.Count; i++) StartStream(_streams[i], i);
         }
     }
 
@@ -150,7 +170,7 @@ sealed class ServerSession : IDisposable
     {
         lock (_lock)
         {
-            if (_disposed || _engine == null || _cfg.Protocol != TransportKind.Tcp || idx >= _cfg.Streams || !_streamIdx.Add(idx)) return false;
+            if (_disposed || _tcpEng == null || idx >= _cfg.Streams || !_streamIdx.Add(idx)) return false;
             s.NoDelay = true;
             _streams.Add(s);
             if (_started) StartStream(s, _streams.Count - 1);
@@ -160,9 +180,11 @@ sealed class ServerSession : IDisposable
 
     void StartStream(Socket s, int i)
     {
-        var spec = SenderSpec.From(_cfg, _cfg.DownMbps / _cfg.Streams);
+        var eng = _tcpEng!;
+        var (_, tcpDown) = _cfg.SplitRate(_cfg.DownMbps);
+        var spec = SenderSpec.From(_cfg, tcpDown / _cfg.Streams);
         if (_qos != null && !_qos.TryAdd(s, null, _cfg.Dscp, out var err)) ServerHost.Log($"{Tag} DSCP not applied: {err}");
-        StartSender($"tcp-tx-{i}", i, spec, (b, n) => { Protocol.SendAll(s, b, n); return true; });
+        StartSender($"tcp-tx-{i}", eng, i, spec, (b, n) => { Protocol.SendAll(s, b, n); return true; });
         var rx = new Thread(() =>
         {
             var buf = new byte[Protocol.MaxPacket];
@@ -173,7 +195,7 @@ sealed class ServerSession : IDisposable
                     if (!Protocol.ReceiveExact(s, buf, 0, Protocol.HeaderSize)) break;
                     if (!PacketHeader.TryRead(buf, out var h) || h.SessionId != Id) break;
                     if (!Protocol.ReceiveExact(s, buf, Protocol.HeaderSize, h.Length - Protocol.HeaderSize)) break;
-                    _engine!.HandlePacket(buf.AsSpan(0, h.Length), h, Clock.NowUs);
+                    eng.HandlePacket(buf.AsSpan(0, h.Length), h, Clock.NowUs);
                 }
             }
             catch { }
@@ -182,12 +204,12 @@ sealed class ServerSession : IDisposable
         rx.Start();
     }
 
-    void StartSender(string name, int streamId, SenderSpec spec, Func<byte[], int, bool> send)
+    void StartSender(string name, LinkEngine eng, int streamId, SenderSpec spec, Func<byte[], int, bool> send)
     {
         var token = _senderCts.Token;
         var t = new Thread(() =>
         {
-            try { _engine!.RunSender(streamId, spec, send, token); }
+            try { eng.RunSender(streamId, spec, send, token); }
             catch (Exception e) when (!token.IsCancellationRequested && !_disposed)
             {
                 ServerHost.Log($"{Tag} {name} stopped: {e.Message}");
@@ -210,7 +232,7 @@ sealed class ServerSession : IDisposable
     public void OnUdpData(ReadOnlySpan<byte> pkt, in PacketHeader h, IPEndPoint ep, long now)
     {
         NoteUdpEndpoint(ep);
-        _engine?.HandlePacket(pkt, h, now);
+        _udpEng?.HandlePacket(pkt, h, now);
     }
 
     public void NoteUdpEndpoint(IPEndPoint ep)
@@ -229,26 +251,34 @@ sealed class ServerSession : IDisposable
 
     public void PrintStatus()
     {
-        if (!_started || _engine == null) return;
+        if (!_started) return;
         long now = Clock.NowUs;
         double dt = Math.Max(1e-3, (now - _prevUs) / 1e6);
-        var rx = _engine.Rx.Snapshot(now);
-        long tx = _engine.TxBytes;
-        long du = rx.UniquePackets() - _prevRx.UniquePackets();
-        long dl = Math.Max(0, rx.Lost - _prevRx.Lost);
-        double loss = du + dl > 0 ? 100.0 * dl / (du + dl) : 0;
-        ServerHost.Log($"{Tag} {_cfg.Protocol} rx(up) {(rx.Bytes - _prevRxBytes) * 8 / dt / 1e6,8:0.00} Mbps loss {loss,6:0.00}% jitter {rx.JitterUs / 1000,6:0.00} ms | " +
-                       $"tx(down) {(tx - _prevTxBytes) * 8 / dt / 1e6,8:0.00} Mbps | rtt {_engine.SmoothedRttUs / 1000,7:0.00} ms");
-        _prevUs = now; _prevRx = rx; _prevRxBytes = rx.Bytes; _prevTxBytes = tx;
+        _prevUs = now;
+        foreach (var (name, eng) in Engines())
+        {
+            var rx = eng.Rx.Snapshot(now);
+            long tx = eng.TxBytes;
+            _prev.TryGetValue(eng, out var p);
+            long du = rx.UniquePackets() - p.rx.UniquePackets();
+            long dl = Math.Max(0, rx.Lost - p.rx.Lost);
+            double loss = du + dl > 0 ? 100.0 * dl / (du + dl) : 0;
+            string proto = name.Length > 0 ? name.Trim() : _cfg.Protocol.ToString();
+            ServerHost.Log($"{Tag} {proto} rx(up) {(rx.Bytes - p.rx.Bytes) * 8 / dt / 1e6,8:0.00} Mbps loss {loss,6:0.00}% jitter {rx.JitterUs / 1000,6:0.00} ms | " +
+                           $"tx(down) {(tx - p.tx) * 8 / dt / 1e6,8:0.00} Mbps | rtt {eng.SmoothedRttUs / 1000,7:0.00} ms");
+            _prev[eng] = (rx, tx);
+        }
     }
 
     void PrintSummary()
     {
-        if (_engine == null) return;
-        var rx = _engine.Rx.Snapshot(Clock.NowUs);
         double dur = _started ? (DateTime.Now - _startedAt).TotalSeconds : 0;
-        double loss = rx.UniquePackets() + rx.Lost > 0 ? 100.0 * rx.Lost / (rx.UniquePackets() + rx.Lost) : 0;
-        ServerHost.Log($"{Tag} session closed after {dur:0} s: received {rx.Bytes / 1e6:0.0} MB (loss {loss:0.###}%), sent {_engine.TxBytes / 1e6:0.0} MB");
+        foreach (var (name, eng) in Engines())
+        {
+            var rx = eng.Rx.Snapshot(Clock.NowUs);
+            double loss = rx.UniquePackets() + rx.Lost > 0 ? 100.0 * rx.Lost / (rx.UniquePackets() + rx.Lost) : 0;
+            ServerHost.Log($"{Tag} {name}session closed after {dur:0} s: received {rx.Bytes / 1e6:0.0} MB (loss {loss:0.###}%), sent {eng.TxBytes / 1e6:0.0} MB");
+        }
     }
 
     public void Dispose()

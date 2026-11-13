@@ -13,6 +13,8 @@ public sealed class ControlMessage
 {
     public string Type { get; set; } = "";
     public int Version { get; set; }
+    /// <summary>Program version of the sender (informational).</summary>
+    public string? AppVersion { get; set; }
     public string? Key { get; set; }
     public TestConfig? Config { get; set; }
     public uint SessionId { get; set; }
@@ -22,7 +24,10 @@ public sealed class ControlMessage
     public long Seq { get; set; }
     public int Kind { get; set; }
     public long Time { get; set; }
+    /// <summary>Final receive report: UDP traffic, or TCP in TCP-only mode.</summary>
     public StatsReport? Report { get; set; }
+    /// <summary>Final receive report for the TCP traffic in mixed mode.</summary>
+    public StatsReport? TcpReport { get; set; }
 }
 
 public sealed class ControlChannel : IDisposable

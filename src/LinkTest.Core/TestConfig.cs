@@ -3,7 +3,13 @@ using System.Text.Json.Serialization;
 
 namespace LinkTest.Core;
 
-public enum TransportKind { Udp, Tcp }
+public enum TransportKind
+{
+    Udp,
+    Tcp,
+    /// <summary>UDP and TCP at the same time; <see cref="TestConfig.UdpSharePct"/> splits the rate.</summary>
+    Mixed,
+}
 
 public enum TrafficProfile
 {
@@ -33,14 +39,27 @@ public sealed class TestConfig
     public TrafficProfile Profile { get; set; } = TrafficProfile.Constant;
     public int BurstOnMs { get; set; } = 200;
     public int BurstOffMs { get; set; } = 800;
-    /// <summary>Parallel TCP connections (TCP only).</summary>
+    /// <summary>Parallel TCP connections (TCP and mixed modes).</summary>
     public int Streams { get; set; } = 1;
+    /// <summary>Mixed mode: percentage of each direction's rate carried by UDP; the rest goes over TCP.</summary>
+    public double UdpSharePct { get; set; } = 30;
     /// <summary>DSCP value to mark traffic with (0 = none). Needs Administrator on Windows.</summary>
     public int Dscp { get; set; }
     /// <summary>0 = run until stopped.</summary>
     public int DurationSec { get; set; }
 
     public TestConfig Clone() => (TestConfig)MemberwiseClone();
+
+    [JsonIgnore] public bool UsesUdp => Protocol is TransportKind.Udp or TransportKind.Mixed;
+    [JsonIgnore] public bool UsesTcp => Protocol is TransportKind.Tcp or TransportKind.Mixed;
+
+    /// <summary>Splits a rate into its UDP and TCP parts according to the mode.</summary>
+    public (double udpMbps, double tcpMbps) SplitRate(double mbps) => Protocol switch
+    {
+        TransportKind.Udp => (mbps, 0),
+        TransportKind.Tcp => (0, mbps),
+        _ => (mbps * UdpSharePct / 100, mbps * (100 - UdpSharePct) / 100),
+    };
 
     public void Normalize()
     {
@@ -49,14 +68,17 @@ public sealed class TestConfig
         PacketSize = Math.Clamp(PacketSize, Core.Protocol.HeaderSize, Core.Protocol.MaxPacket);
         BurstOnMs = Math.Clamp(BurstOnMs, 1, 60_000);
         BurstOffMs = Math.Clamp(BurstOffMs, 0, 60_000);
-        Streams = Protocol == TransportKind.Tcp ? Math.Clamp(Streams, 1, 16) : 1;
+        if (!Enum.IsDefined(Protocol)) Protocol = TransportKind.Udp;
+        Streams = UsesTcp ? Math.Clamp(Streams, 1, 16) : 1;
+        UdpSharePct = double.IsFinite(UdpSharePct) ? Math.Clamp(UdpSharePct, 0, 100) : 30;
         Dscp = Math.Clamp(Dscp, 0, 63);
         DurationSec = Math.Max(0, DurationSec);
     }
 
     public override string ToString() =>
-        $"{Protocol} up {UpMbps:0.###} Mbps / down {DownMbps:0.###} Mbps, {Profile}, {PacketSize} B" +
-        (Protocol == TransportKind.Tcp ? $", {Streams} stream(s)" : "") +
+        (Protocol == TransportKind.Mixed ? $"Mixed ({UdpSharePct:0.#}% UDP / {100 - UdpSharePct:0.#}% TCP)" : Protocol.ToString()) +
+        $" up {UpMbps:0.###} Mbps / down {DownMbps:0.###} Mbps, {Profile}, {PacketSize} B" +
+        (UsesTcp ? $", {Streams} TCP stream(s)" : "") +
         (Dscp > 0 ? $", DSCP {Dscp}" : "");
 }
 

@@ -37,7 +37,10 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
 **Client GUI**: enter the server IP or FQDN, then pick the options:
 
 - **Protocol**: UDP shows the network's real loss and reordering. TCP shows what applications experience
-  (kernel retransmissions and RTO timeouts are read with `SIO_TCP_INFO`).
+  (kernel retransmissions and RTO timeouts are read with `SIO_TCP_INFO`). **Mixed** runs both at once, like
+  real traffic: **UDP share %** sets how much of each direction's rate is UDP, and the rest goes over the
+  TCP streams. Each transport is measured separately. The throughput tiles show the UDP/TCP split, and
+  loss, jitter and RTT come from the UDP part, with the TCP RTT shown alongside.
 - **Upload / TX and Download / RX rates** are set separately. A rate of 0 sends heartbeats only, about 1 kbps
   (monitoring mode).
 - **Packet size**, **TCP parallel streams** and **duration** (0 = until stopped).

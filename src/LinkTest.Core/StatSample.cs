@@ -43,6 +43,15 @@ public sealed class StatSample
     public int UpTimeoutsTotal { get; init; }
     public int DownTimeoutsTotal { get; init; }
 
+    // Mixed mode: throughput per transport (NaN otherwise). Quality figures above come from the UDP traffic.
+    public bool Mixed { get; init; }
+    public double UpMbpsUdp { get; init; } = double.NaN;
+    public double UpMbpsTcp { get; init; } = double.NaN;
+    public double DownMbpsUdp { get; init; } = double.NaN;
+    public double DownMbpsTcp { get; init; } = double.NaN;
+    /// <summary>Mixed mode: RTT measured on the TCP streams (includes TCP queueing).</summary>
+    public double RttTcpMs { get; init; } = double.NaN;
+
     /// <summary>Estimated VoIP MOS (ITU-T G.107 simplified) from RTT, worst jitter and worst loss.</summary>
     public double Mos { get; init; } = double.NaN;
 
@@ -70,7 +79,8 @@ public sealed class CsvLogger : IDisposable
         _w = new StreamWriter(path, false, new UTF8Encoding(false)) { AutoFlush = true };
         _w.WriteLine("time,elapsed_s,tx_mbps,up_mbps,up_loss_pct,up_jitter_ms,up_max_gap_ms,up_lost_total,up_report_stale," +
                      "down_mbps,down_loss_pct,down_jitter_ms,down_max_gap_ms,down_lost_total," +
-                     "rtt_ms,rtt_min_ms,rtt_max_ms,up_retrans_bytes,down_retrans_bytes,mos,tunnels");
+                     "rtt_ms,rtt_min_ms,rtt_max_ms,up_retrans_bytes,down_retrans_bytes,mos," +
+                     "up_udp_mbps,up_tcp_mbps,down_udp_mbps,down_tcp_mbps,rtt_tcp_ms,tunnels");
     }
 
     public string Path { get; }
@@ -83,6 +93,7 @@ public sealed class CsvLogger : IDisposable
             F(s.UpMbps), F(s.UpLossPct), F(s.UpJitterMs), F(s.UpMaxGapMs), s.UpLostTotal, s.UpReportStale ? 1 : 0,
             F(s.DownMbps), F(s.DownLossPct), F(s.DownJitterMs), F(s.DownMaxGapMs), s.DownLostTotal,
             F(s.RttMs), F(s.RttMinMs), F(s.RttMaxMs), s.UpRetransBytes, s.DownRetransBytes, F(s.Mos),
+            F(s.UpMbpsUdp), F(s.UpMbpsTcp), F(s.DownMbpsUdp), F(s.DownMbpsTcp), F(s.RttTcpMs),
             "\"" + tunnelStates.Replace("\"", "'") + "\""));
     }
 

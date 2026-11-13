@@ -13,7 +13,8 @@ sealed class MainForm : Form
     readonly TextBox _host = new() { PlaceholderText = "IP address or FQDN" };
     readonly NumericUpDown _port = Num(1, 65535, 0);
     readonly TextBox _key = new() { UseSystemPasswordChar = true, PlaceholderText = "(optional)" };
-    readonly ComboBox _proto = Combo("UDP", "TCP");
+    readonly ComboBox _proto = Combo("UDP", "TCP", "Mixed (TCP + UDP)");
+    readonly NumericUpDown _udpShare = Num(0, 100, 0);
     readonly NumericUpDown _up = Num(0, 10000, 3);
     readonly NumericUpDown _down = Num(0, 10000, 3);
     readonly NumericUpDown _size = Num(Protocol.HeaderSize, Protocol.MaxPacket, 0);
@@ -114,7 +115,9 @@ sealed class MainForm : Form
         Row(form, "Key", _key, "Shared key, if the server was started with --key");
 
         Header(form, "Traffic");
-        Row(form, "Protocol", _proto, "UDP shows real packet loss / reordering. TCP shows what an application sees: retransmissions, stalls and throughput collapse.");
+        Row(form, "Protocol", _proto, "UDP shows real packet loss / reordering. TCP shows what an application sees: retransmissions, stalls and throughput collapse.\n" +
+            "Mixed runs both at once, like real traffic (web/file transfer over TCP alongside voice/video over UDP); loss, jitter and RTT figures then come from the UDP part.");
+        Row(form, "UDP share (%)", _udpShare, "Mixed mode: percentage of each direction's rate sent as UDP; the rest goes over the TCP streams.");
         Row(form, "Upload / TX (Mbps)", _up, "Client → server payload rate. 0 = heartbeats only (monitoring mode).");
         Row(form, "Download / RX (Mbps)", _down, "Server → client payload rate. 0 = heartbeats only (monitoring mode).");
         Row(form, "Packet size (bytes)", _size, "UDP payload per datagram (keep ≤1472 to avoid IP fragmentation, ≤1400 for VPN paths) or TCP write size.");
@@ -182,6 +185,7 @@ sealed class MainForm : Form
         _chartLat.AddSeries("RTT max", Color.FromArgb(240, 180, 140));
         _chartLat.AddSeries("Jitter ↑", Color.FromArgb(0, 120, 212));
         _chartLat.AddSeries("Jitter ↓", Color.FromArgb(16, 137, 62));
+        _chartLat.AddSeries("RTT (TCP)", Color.FromArgb(135, 100, 184));
         _chartLoss.AddSeries("Loss ↑", Color.FromArgb(0, 120, 212));
         _chartLoss.AddSeries("Loss ↓", Color.FromArgb(196, 43, 28));
 
@@ -269,7 +273,8 @@ sealed class MainForm : Form
         _host.Text = _settings.Host;
         _port.Value = Math.Clamp(_settings.Port, 1, 65535);
         _key.Text = _settings.Key;
-        _proto.SelectedIndex = c.Protocol == TransportKind.Tcp ? 1 : 0;
+        _proto.SelectedIndex = Math.Clamp((int)c.Protocol, 0, 2);
+        _udpShare.Value = (decimal)Math.Clamp(c.UdpSharePct, 0, 100);
         _up.Value = (decimal)Math.Clamp(c.UpMbps, 0, 10000);
         _down.Value = (decimal)Math.Clamp(c.DownMbps, 0, 10000);
         _size.Value = Math.Clamp(c.PacketSize, Protocol.HeaderSize, Protocol.MaxPacket);
@@ -302,7 +307,8 @@ sealed class MainForm : Form
 
     TestConfig ReadConfig() => new()
     {
-        Protocol = _proto.SelectedIndex == 1 ? TransportKind.Tcp : TransportKind.Udp,
+        Protocol = (TransportKind)Math.Max(0, _proto.SelectedIndex),
+        UdpSharePct = (double)_udpShare.Value,
         UpMbps = (double)_up.Value,
         DownMbps = (double)_down.Value,
         PacketSize = (int)_size.Value,
@@ -329,7 +335,8 @@ sealed class MainForm : Form
         bool idle = _session == null;
         foreach (var c in _inputs) c.Enabled = idle;
         if (!idle) return;
-        _streams.Enabled = _proto.SelectedIndex == 1;
+        _streams.Enabled = _proto.SelectedIndex >= 1;
+        _udpShare.Enabled = _proto.SelectedIndex == 2;
         bool bursty = _profile.SelectedIndex == (int)TrafficProfile.Bursty;
         _burstOn.Enabled = _burstOff.Enabled = bursty;
         _size.Enabled = _profile.SelectedIndex != (int)TrafficProfile.Voip;
@@ -496,22 +503,25 @@ sealed class MainForm : Form
         if (session == null || !session.IsRunning) return;
         var s = session.TakeSample();
 
-        _tUp.Set(Mbps(s.UpMbps), s.UpReportStale ? $"no report for {Fmt(s.UpReportAgeSec, "0.0")} s" : $"sent {Mbps(s.TxMbps)}", s.UpReportStale ? Color.Firebrick : null);
-        _tDown.Set(Mbps(s.DownMbps), double.IsFinite(s.ServerTxMbps) ? $"server sent {Mbps(s.ServerTxMbps)}" : "");
-        _tRtt.Set(Ms(s.RttMs), $"min {Fmt(s.RttMinMs, "0.0")} / max {Fmt(s.RttMaxMs, "0.0")}", LevelColor(s.RttMs, 100, 250));
+        _tUp.Set(Mbps(s.UpMbps), s.UpReportStale ? $"no report for {Fmt(s.UpReportAgeSec, "0.0")} s"
+            : s.Mixed ? $"UDP {Mbps(s.UpMbpsUdp)} · TCP {Mbps(s.UpMbpsTcp)}" : $"sent {Mbps(s.TxMbps)}", s.UpReportStale ? Color.Firebrick : null);
+        _tDown.Set(Mbps(s.DownMbps), s.Mixed ? $"UDP {Mbps(s.DownMbpsUdp)} · TCP {Mbps(s.DownMbpsTcp)}"
+            : double.IsFinite(s.ServerTxMbps) ? $"server sent {Mbps(s.ServerTxMbps)}" : "");
+        _tRtt.Set(Ms(s.RttMs), s.Mixed ? $"UDP · TCP {Ms(s.RttTcpMs)}" : $"min {Fmt(s.RttMinMs, "0.0")} / max {Fmt(s.RttMaxMs, "0.0")}",
+            LevelColor(s.RttMs, 100, 250));
         _tJitter.Set($"{Fmt(s.UpJitterMs, "0.0")} / {Fmt(s.DownJitterMs, "0.0")}", "ms", LevelColor(Math.Max(Z(s.UpJitterMs), s.DownJitterMs), 10, 30));
         _tLoss.Set($"{Fmt(s.UpLossPct, "0.##")} / {Fmt(s.DownLossPct, "0.##")}",
             $"total {Fmt(s.UpLossTotalPct, "0.###")}% / {Fmt(s.DownLossTotalPct, "0.###")}%",
             LevelColor(Math.Max(Z(s.UpLossPct), s.DownLossPct), 0.5, 3));
         _tGap.Set($"{Fmt(s.UpMaxGapMs, "0")} / {Fmt(s.DownMaxGapMs, "0")}", "ms (last ~2 s)", LevelColor(Math.Max(Z(s.UpMaxGapMs), s.DownMaxGapMs), 250, 1000));
-        _tRetrans.Set(session.Config.Protocol == TransportKind.Tcp ? $"{Kb(s.UpRetransBytes)} / {Kb(s.DownRetransBytes)}" : "n/a (UDP)",
-            session.Config.Protocol == TransportKind.Tcp ? $"KB/s · RTOs {s.UpTimeoutsTotal} / {s.DownTimeoutsTotal}" : "");
+        _tRetrans.Set(session.Config.UsesTcp ? $"{Kb(s.UpRetransBytes)} / {Kb(s.DownRetransBytes)}" : "n/a (UDP)",
+            session.Config.UsesTcp ? $"KB/s · RTOs {s.UpTimeoutsTotal} / {s.DownTimeoutsTotal}" : "");
         _tMos.Set(Fmt(s.Mos, "0.0"), double.IsFinite(s.Mos) ? MosText(s.Mos) : "", s.Mos >= 4 ? Color.ForestGreen : s.Mos >= 3.6 ? Color.DarkOrange : Color.Firebrick);
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
         _tTime.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", session.Config.DurationSec > 0 ? $"of {session.Config.DurationSec} s" : "until stopped");
 
         _chartTput.Push(s.UpMbps, s.DownMbps, s.TxMbps);
-        _chartLat.Push(s.RttMs, s.RttMaxMs, s.UpJitterMs, s.DownJitterMs);
+        _chartLat.Push(s.RttMs, s.RttMaxMs, s.UpJitterMs, s.DownJitterMs, s.RttTcpMs);
         _chartLoss.Push(s.UpLossPct, s.DownLossPct);
 
         OnTickTunnels();
