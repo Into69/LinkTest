@@ -15,8 +15,17 @@ sealed class MobileSettings
     public bool IpLookup { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
     public bool KeepScreenOn { get; set; }
-    /// <summary>Foreground service + notification so tests keep running with the screen off.</summary>
+    /// <summary>Kept for older settings files: tests now always run in the foreground service.</summary>
     public bool KeepRunningInBackground { get; set; } = true;
+    /// <summary>The battery-optimisation prompt was offered once (afterwards: Settings > Background testing).</summary>
+    public bool BatteryPromptShown { get; set; }
+    /// <summary>Report the phone's location with the test data and to the server. Off by default.</summary>
+    public bool ShareLocation { get; set; }
+    /// <summary>"auto", "4", "6" or "both" (IPv4 then IPv6 with a comparison).</summary>
+    public string Family { get; set; } = "auto";
+    public bool RequireTls { get; set; }
+    public bool CapacityTest { get; set; }
+    public double CapacityPct { get; set; } = 80;
     public bool MeasureMtu { get; set; } = true;
     public bool AutoTraceroute { get; set; } = true;
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
@@ -103,12 +112,47 @@ sealed class AppController
     /// <summary>Detailed UDP/TCP statistics: live while running, final after the test.</summary>
     public LinkDetail? Detail { get; private set; }
 
-    public async Task<string?> StartAsync()
+    readonly KnownServers _known = new(Path.Combine(FileSystem.AppDataDirectory, "known-servers.json"));
+    // IPv4-then-IPv6 comparison: 0 = none, 4 = IPv4 test running, 6 = IPv6 test running.
+    int _compareStage;
+    TestRecord? _compareFirst;
+
+    /// <param name="familyOverride">Second run of an IPv4-then-IPv6 comparison.</param>
+    public async Task<string?> StartAsync(System.Net.Sockets.AddressFamily? familyOverride = null)
     {
         if (Busy) return null;
         var st = Settings;
         if (string.IsNullOrWhiteSpace(st.Host)) return "Enter the server IP address or name on the Settings tab.";
         st.Save();
+        var family = familyOverride;
+        if (familyOverride == null)
+        {
+            _compareStage = 0;
+            _compareFirst = null;
+            switch (st.Family)
+            {
+                case "4": family = System.Net.Sockets.AddressFamily.InterNetwork; break;
+                case "6": family = System.Net.Sockets.AddressFamily.InterNetworkV6; break;
+                case "both":
+                    if (st.Config.DurationSec <= 0) return "Comparing IPv4 and IPv6 runs the test twice, one after the other: set a duration (for example 120 s) on the Settings tab.";
+                    family = System.Net.Sockets.AddressFamily.InterNetwork;
+                    _compareStage = 4;
+                    break;
+            }
+        }
+
+        // Opt-in location: ask for permission before the test, while LinkTest is in front.
+        _locationAllowed = false;
+        if (st.ShareLocation)
+        {
+            try
+            {
+                var perm = await Permissions.RequestAsync<Permissions.LocationWhenInUse>();
+                _locationAllowed = perm == PermissionStatus.Granted;
+                if (!_locationAllowed) Log("Location not reported: permission was not granted (Android settings > Apps > LinkTest > Permissions > Location).");
+            }
+            catch (Exception e) { Log("Location not reported: " + e.Message); }
+        }
 
         var session = new ClientSession();
         session.Log += m => OnUi(() => Log(m));
@@ -118,6 +162,13 @@ sealed class AppController
         session.TraceCompleted += t => OnUi(() => { _traces.Add(t); if (_traces.Count > 10) _traces.RemoveAt(0); PathChanged?.Invoke(); });
         session.MeasureMtu = st.MeasureMtu;
         session.AutoTraceroute = st.AutoTraceroute;
+        session.Family = family;
+        session.UseTls = true;
+        session.RequireTls = st.RequireTls;
+        session.KnownServers = _known;
+        session.CapacityTest = st.CapacityTest;
+        session.CapacityTargetPct = st.CapacityPct;
+        session.CapacityMeasured += () => OnUi(() => SetStatus($"Running · {session.Config} (capacity up {Cap(session.CapacityUpMbps, session.CapacityUpAtLimit)} / down {Cap(session.CapacityDownMbps, session.CapacityDownAtLimit)})"));
         Mtu = null;
         _traces.Clear();
         Connecting = true;
@@ -125,11 +176,11 @@ sealed class AppController
         Detail = null;
         Connection = null;
         SetStatus($"Connecting to {st.Host}…");
-        _connectCts = new CancellationTokenSource();
+        var connectCts = _connectCts = new CancellationTokenSource();
         try
         {
             var tunnels = st.Tunnels.Where(t => t.Enabled).Select(t => t.Clone()).ToList();
-            await session.StartAsync(st.Host, st.Port, st.Key, st.Config, tunnels, st.ArtificialLossPct, _connectCts.Token, st.IpLookup);
+            await session.StartAsync(st.Host, st.Port, st.Key, st.Config, tunnels, st.ArtificialLossPct, connectCts.Token, st.IpLookup);
         }
         catch (Exception e)
         {
@@ -138,18 +189,35 @@ sealed class AppController
             string msg = e is OperationCanceledException ? "Cancelled" : e.Message;
             Log("Could not start: " + msg);
             SetStatus("Idle");
+            if (e is ServerCertificateChangedException changed && Application.Current?.Windows.FirstOrDefault()?.Page is { } page)
+            {
+                if (_connectCts == connectCts) _connectCts = null;
+                if (await page.DisplayAlertAsync("Server certificate changed", changed.Message, "Trust and connect", "Cancel"))
+                {
+                    _known.Trust(changed.Server, changed.Presented);
+                    Log("Trusting the new server certificate " + Tls.ShortFingerprint(changed.Presented));
+                    return await StartAsync(familyOverride);
+                }
+                _compareStage = 0;
+                return null;
+            }
+            if (_compareStage == 6) Log("IPv4 vs IPv6 comparison not possible: the IPv6 test could not start.");
+            _compareStage = 0;
             return e is OperationCanceledException ? null : msg;
         }
         finally
         {
-            _connectCts?.Dispose();
-            _connectCts = null;
+            connectCts.Dispose();
+            if (_connectCts == connectCts) _connectCts = null;   // a retry may already have its own
         }
 
         Session = session;
         Connecting = false;
         if (st.KeepScreenOn) DeviceDisplay.Current.KeepScreenOn = true;
-        if (st.KeepRunningInBackground) await StartServiceAsync(session);
+        // Always: the foreground service (wake lock, Wi-Fi locks, notification) keeps the test running with the
+        // screen off, the phone asleep or another app in front.
+        StartService(session);
+        _lastTickUtc = DateTime.UtcNow;
         // The test may have ended while the permission prompt was open.
         if (Session != session || !session.IsRunning) return null;
         _timer ??= CreateTimer();
@@ -166,10 +234,41 @@ sealed class AppController
         return t;
     }
 
+    DateTime _lastTickUtc;
+    bool _locationAllowed;
+    int _locationBusy;
+    long _locationTick;
+
+    /// <summary>Reads a location fix (every 10 s) and hands it to the session.</summary>
+    async void PollLocation(ClientSession s)
+    {
+        if (Interlocked.Exchange(ref _locationBusy, 1) == 1) return;
+        try
+        {
+            var l = await Geolocation.Default.GetLocationAsync(new GeolocationRequest(GeolocationAccuracy.Best, TimeSpan.FromSeconds(8)));
+            if (l != null && s.IsRunning)
+                s.ReportLocation(new GeoFix(DateTime.Now, l.Latitude, l.Longitude, l.Accuracy ?? double.NaN, l.Altitude ?? double.NaN,
+                    l.Speed ?? double.NaN, l.IsFromMockProvider ? "mock" : "GPS / network"));
+        }
+        catch (Exception e)
+        {
+            if (_locationTick <= 1) Log("Location unavailable: " + e.Message);
+        }
+        finally { Interlocked.Exchange(ref _locationBusy, 0); }
+    }
+
     void Tick()
     {
         var s = Session;
         if (s == null || !s.IsRunning) return;
+        // The 1 s timer only stalls if Android suspended the app despite the foreground service (battery saver,
+        // aggressive manufacturer power management): say so, so the gap isn't mistaken for a network problem.
+        var nowUtc = DateTime.UtcNow;
+        double paused = (nowUtc - _lastTickUtc).TotalSeconds;
+        _lastTickUtc = nowUtc;
+        if (paused > 5)
+            Log($"Warning: the phone paused LinkTest for about {paused:0} s (power saving). Allow LinkTest to ignore battery optimisation in Settings > Background testing.");
+        if (_locationAllowed && _locationTick++ % 10 == 0) PollLocation(s);
         var sample = s.TakeSample();
         LastSample = sample;
         Detail = sample.Detail;
@@ -215,21 +314,88 @@ sealed class AppController
         DeviceDisplay.Current.KeepScreenOn = false;
         StopService();
         SetStatus("Idle - " + reason);
+        ContinueComparison(session.Record, reason);
     }
 
-    async Task StartServiceAsync(ClientSession session)
+    static string Cap(double v, bool atLimit) => double.IsFinite(v) ? $"{(atLimit ? "≥" : "")}{v:0.#} Mbps" : "–";
+
+    /// <summary>IPv4-then-IPv6: after the IPv4 test start the IPv6 one; after that, offer the comparison report.</summary>
+    async void ContinueComparison(TestRecord? rec, string reason)
+    {
+        if (_compareStage == 0) return;
+        if (rec == null || reason == "Stopped by user")
+        {
+            Log("IPv4 vs IPv6 comparison cancelled.");
+            _compareStage = 0;
+            return;
+        }
+        if (_compareStage == 4)
+        {
+            _compareFirst = rec;
+            _compareStage = 6;
+            Log("IPv4 test done - starting the IPv6 test…");
+            await Task.Delay(2000);
+            var err = await StartAsync(System.Net.Sockets.AddressFamily.InterNetworkV6);
+            if (err != null) Log("IPv6 test: " + err);
+            return;
+        }
+        _compareStage = 0;
+        if (_compareFirst == null) return;
+        try
+        {
+            var cmp = new Comparison(_compareFirst, rec);
+            string dir = Path.Combine(FileSystem.CacheDirectory, "reports");
+            Directory.CreateDirectory(dir);
+            string pdf = Path.Combine(dir, cmp.SuggestedFileName("pdf"));
+            File.WriteAllBytes(pdf, PdfReportBuilder.BuildComparison(cmp));
+            File.WriteAllText(Path.ChangeExtension(pdf, "html"), ReportBuilder.BuildComparison(cmp));
+            Log("IPv4 vs IPv6: " + cmp.Headline);
+            if (Application.Current?.Windows.FirstOrDefault()?.Page is { } page &&
+                await page.DisplayAlertAsync("IPv4 vs IPv6", cmp.Headline + "\n\nShare the comparison report (PDF)?", "Share", "Later"))
+                await Share.Default.RequestAsync(new ShareFileRequest { Title = "LinkTest IPv4 vs IPv6", File = new ShareFile(pdf, "application/pdf") });
+        }
+        catch (Exception e) { Log("Could not make the comparison: " + e.Message); }
+    }
+
+    /// <summary>
+    /// Starts the foreground service right away, while LinkTest is certainly in front (Android 12+ does not let a
+    /// background app start one), then asks for the notification and battery permissions without holding up the test.
+    /// </summary>
+    void StartService(ClientSession session)
     {
         try
         {
-            // Android 13+: the ongoing notification needs permission (the service still runs if refused).
-            if (OperatingSystem.IsAndroidVersionAtLeast(33))
-                await Permissions.RequestAsync<Permissions.PostNotifications>();
-            // Don't start (and hold wake/Wi-Fi locks) if the test ended while the prompt was open.
-            if (Session != session || !session.IsRunning) return;
-            TestService.Control.Start($"Testing {Settings.Host} · {session.Config}");
+            _locationTick = 0;
+            TestService.Control.Start($"Testing {Settings.Host} · {session.Config}", withLocation: _locationAllowed);
             _serviceRunning = true;
         }
         catch (Exception e) { Log("Background mode unavailable: " + e.Message); }
+        _ = AskBackgroundPermissionsAsync(session);
+    }
+
+    async Task AskBackgroundPermissionsAsync(ClientSession session)
+    {
+        try
+        {
+            // Android 13+: the ongoing notification needs permission (the service runs either way).
+            if (OperatingSystem.IsAndroidVersionAtLeast(33))
+                await Permissions.RequestAsync<Permissions.PostNotifications>();
+            if (_serviceRunning && Session == session) TestService.Control.Update($"Testing {Settings.Host} · {session.Config}");
+
+            // Once: offer the battery-optimisation exemption, so Doze / app standby can't restrict long tests.
+            if (!Settings.BatteryPromptShown && !TestService.Battery.IsExempt && Session == session && session.IsRunning
+                && Application.Current?.Windows.FirstOrDefault()?.Page is { } page)
+            {
+                Settings.BatteryPromptShown = true;
+                Settings.Save();
+                if (await page.DisplayAlertAsync("Keep tests running",
+                        "To make sure Android never pauses a test while the screen is off, allow LinkTest to ignore battery optimisation. " +
+                        "It only uses extra power while a test runs.\n\nYou can change this later in Settings > Background testing.",
+                        "Allow", "Not now"))
+                    TestService.Battery.RequestExemption();
+            }
+        }
+        catch (Exception e) { Log("Could not ask for background permissions: " + e.Message); }
     }
 
     void StopService()

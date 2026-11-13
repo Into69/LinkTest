@@ -14,6 +14,7 @@ sealed class ServerSettings
     public int MaxSessions { get; set; } = 8;
     public bool StartOnLaunch { get; set; }
     public bool LookupClients { get; set; } = true;
+    public bool RequireTls { get; set; }
     public bool CheckForUpdates { get; set; } = true;
     public bool AutoInstallUpdates { get; set; }
 

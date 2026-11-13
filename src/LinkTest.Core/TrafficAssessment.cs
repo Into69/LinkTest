@@ -122,7 +122,7 @@ public static class TrafficAssessment
                 if (v == null) return double.NaN;
                 double s = 0; int n = 0;
                 for (int k = 0; k < v.Count && k < t.Count; k++)
-                    if (t[k] > r.Config.BaselineSec + 1 && double.IsFinite(v[k])) { s += v[k]; n++; }   // skip the ramp-up second
+                    if (t[k] > r.JudgeAfterSec + 1 && double.IsFinite(v[k])) { s += v[k]; n++; }   // skip the warm-up and the ramp-up second
                 return n > 0 ? s / n : double.NaN;
             }
             double upAvg = ser != null ? Avg(ser.Up) : sum?.UpMbps ?? double.NaN;
@@ -177,10 +177,10 @@ public static class TrafficAssessment
             if (ser != null)
                 for (int k = 0; k < t.Count && k < ser.Up.Count; k++)
                 {
-                    if (t[k] <= r.Config.BaselineSec + 1 || req.Informational) { a.Seconds.Add(null); continue; }
+                    if (t[k] <= r.JudgeAfterSec + 1 || req.Informational) { a.Seconds.Add(null); continue; }
                     bool ok = true, any = false;
-                    double loss = ClassAssessment.MaxF(Window(lossUp, ser.Up, k, window, t, r.Config.BaselineSec + 1),
-                                                       Window(lossDn, ser.Down, k, window, t, r.Config.BaselineSec + 1));
+                    double loss = ClassAssessment.MaxF(Window(lossUp, ser.Up, k, window, t, r.JudgeAfterSec + 1),
+                                                       Window(lossDn, ser.Down, k, window, t, r.JudgeAfterSec + 1));
                     if (double.IsFinite(loss))
                     {
                         any = true;

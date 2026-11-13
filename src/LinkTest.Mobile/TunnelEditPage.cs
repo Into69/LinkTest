@@ -66,7 +66,7 @@ sealed class TunnelEditPage : ContentPage
             _onSave(_p);
             await Navigation.PopAsync();
         };
-        var defaults = new Button { Text = "Restore preset values", Margin = new Thickness(0, 8, 0, 0) };
+        var defaults = new Button { Text = "Restore preset values", BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent, Margin = new Thickness(0, 8, 0, 0) };
         defaults.Clicked += (_, _) =>
         {
             var preset = TunnelPresets.CreateDefaults().FirstOrDefault(t => t.Name == profile.Name);

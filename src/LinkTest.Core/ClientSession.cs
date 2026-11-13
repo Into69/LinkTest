@@ -42,6 +42,11 @@ public sealed class ClientSession : IDisposable
     readonly BufferbloatMeter _bloat = new();
     readonly SampleSeries _series = new();
     readonly List<ClassSeries> _classSeries = new();
+    readonly List<GeoFix> _locations = new();
+    readonly List<IpChange> _ipChanges = new();
+    volatile GeoFix? _lastFix;
+    string? _publicIp;
+    bool _online;
     readonly List<string> _events = new();
     double _mosSum, _maxGap;
     int _mosCount;
@@ -100,15 +105,118 @@ public sealed class ClientSession : IDisposable
     long _startUs, _stopUs, _finalUs, _prevUs;
     [ThreadStatic] static Random? _tlsRnd;
 
-    public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct)
+    /// <param name="family">InterNetwork / InterNetworkV6 to insist on one address family; null = IPv4 first, then IPv6.</param>
+    public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct, AddressFamily? family = null)
     {
         host = host.Trim();
         if (host.StartsWith('[') && host.EndsWith(']')) host = host[1..^1];
-        if (IPAddress.TryParse(host, out var ip)) return ip;
+        string fam = family == AddressFamily.InterNetworkV6 ? "IPv6" : "IPv4";
+        if (IPAddress.TryParse(host, out var ip))
+        {
+            ip = Protocol.Normalize(ip);
+            if (family != null && ip.AddressFamily != family)
+                throw new InvalidOperationException($"{host} is not an {fam} address: enter the server's name (or its {fam} address) to test over {fam}.");
+            return ip;
+        }
         var addrs = await Dns.GetHostAddressesAsync(host, ct);
+        if (family != null)
+            return addrs.FirstOrDefault(a => a.AddressFamily == family)
+                   ?? throw new InvalidOperationException($"{host} has no {fam} address (no {(family == AddressFamily.InterNetworkV6 ? "AAAA" : "A")} record).");
         return addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
                ?? addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6)
                ?? throw new SocketException((int)SocketError.HostNotFound);
+    }
+
+    /// <summary>Only test over this address family (null = IPv4 first, then IPv6).</summary>
+    public AddressFamily? Family { get; set; }
+    /// <summary>"IPv4" or "IPv6" once connected.</summary>
+    public string FamilyName => ServerEndPoint?.AddressFamily == AddressFamily.InterNetworkV6 ? "IPv6" : "IPv4";
+
+    // ------------------------------------------------------------ capacity test
+    /// <summary>
+    /// Find the link's capacity first: ramp each direction up from a few Mbps to the configured rate (used as the most to
+    /// try) until it saturates, then run the test at <see cref="CapacityTargetPct"/> of what was found. Needs a 1.9+ server.
+    /// </summary>
+    public bool CapacityTest { get; set; }
+    public double CapacityTargetPct { get; set; } = 80;
+    public double CapacityUpMbps { get; private set; } = double.NaN;
+    public double CapacityDownMbps { get; private set; } = double.NaN;
+    /// <summary>True when the direction never saturated (capacity is at least the value found).</summary>
+    public bool CapacityUpAtLimit { get; private set; }
+    public bool CapacityDownAtLimit { get; private set; }
+    /// <summary>Seconds from the start until the measured test begins (idle baseline + capacity probe).</summary>
+    public double WarmupSec { get; private set; }
+    public event Action? CapacityMeasured;
+
+    readonly System.Collections.Concurrent.ConcurrentQueue<StatSample> _probeQ = new();
+    volatile bool _probing;
+    double _baseUp, _baseDown, _maxUp, _maxDown, _serverCap = double.PositiveInfinity;
+
+    /// <summary>Sets new upload / download rates while the test runs (1.9+ server; both base rates must be above 0).</summary>
+    void SetRates(double up, double down)
+    {
+        if (_baseUp > 0) foreach (var c in _classes) c.Eng.RateScale = up / _baseUp;
+        _ctrl?.TrySend(new ControlMessage { Type = "rate", Config = new TestConfig { UpMbps = up, DownMbps = down } });
+    }
+
+    async Task RunCapacityProbeAsync()
+    {
+        const double start = 2, growth = 1.6;
+        try
+        {
+            _probing = true;
+            await Task.Delay(TimeSpan.FromSeconds(Config.BaselineSec + 1), _cts.Token);
+            double maxUp = Math.Min(_maxUp, _serverCap), maxDn = Math.Min(_maxDown, _serverCap);
+            double rUp = maxUp > 0 ? Math.Min(start, maxUp) : 0, rDn = maxDn > 0 ? Math.Min(start, maxDn) : 0;
+            bool upDone = rUp <= 0, dnDone = rDn <= 0;
+            double capUp = 0, capDn = 0;
+            Emit($"Capacity test: ramping up to {(maxUp > 0 ? $"{maxUp:0.###} Mbps up" : "")}{(maxUp > 0 && maxDn > 0 ? " / " : "")}{(maxDn > 0 ? $"{maxDn:0.###} Mbps down" : "")}…");
+            while (!(upDone && dnDone) && !_cts.IsCancellationRequested && !_stopping)
+            {
+                SetRates(rUp, rDn);
+                while (_probeQ.TryDequeue(out _)) { }
+                var got = new List<StatSample>();
+                while (got.Count < 3 && !_cts.IsCancellationRequested)   // the first second after a change is mixed
+                {
+                    await Task.Delay(250, _cts.Token);
+                    while (_probeQ.TryDequeue(out var s)) got.Add(s);
+                }
+                var use = got.Skip(1).ToList();
+                double Avg(Func<StatSample, double> f) { var v = use.Select(f).Where(double.IsFinite).ToList(); return v.Count > 0 ? v.Average() : double.NaN; }
+                double rxUp = Avg(s => s.UpMbps), rxDn = Avg(s => s.DownMbps);
+                double lossUp = Avg(s => s.UpLossPct), lossDn = Avg(s => s.DownLossPct);
+                if (!upDone)
+                {
+                    if (double.IsFinite(rxUp)) capUp = Math.Max(capUp, rxUp);
+                    bool saturated = !(rxUp >= 0.9 * rUp) || lossUp > 5;
+                    if (saturated || rUp >= maxUp) { upDone = true; CapacityUpAtLimit = !saturated; rUp = Final(capUp, maxUp); }
+                    else rUp = Math.Min(maxUp, rUp * growth);
+                }
+                if (!dnDone)
+                {
+                    if (double.IsFinite(rxDn)) capDn = Math.Max(capDn, rxDn);
+                    bool saturated = !(rxDn >= 0.9 * rDn) || lossDn > 5;
+                    if (saturated || rDn >= maxDn) { dnDone = true; CapacityDownAtLimit = !saturated; rDn = Final(capDn, maxDn); }
+                    else rDn = Math.Min(maxDn, rDn * growth);
+                }
+            }
+            if (_cts.IsCancellationRequested || _stopping) return;
+            CapacityUpMbps = maxUp > 0 ? capUp : double.NaN;
+            CapacityDownMbps = maxDn > 0 ? capDn : double.NaN;
+            SetRates(rUp, rDn);
+            Config.UpMbps = Math.Round(rUp, 3);
+            Config.DownMbps = Math.Round(rDn, 3);
+            WarmupSec = (Clock.NowUs - _startUs) / 1e6 + 1;
+            string Cap(double v, bool limit) => double.IsFinite(v) ? $"{(limit ? "at least " : "")}{v:0.##} Mbps" : "not tested";
+            Emit($"Capacity: up {Cap(CapacityUpMbps, CapacityUpAtLimit)}, down {Cap(CapacityDownMbps, CapacityDownAtLimit)}. " +
+                 $"Testing at {CapacityTargetPct:0}%: up {Config.UpMbps:0.###} / down {Config.DownMbps:0.###} Mbps.");
+            CapacityMeasured?.Invoke();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { Emit("Capacity test failed: " + e.Message); }
+        finally { _probing = false; }
+
+        double Final(double cap, double max) => Math.Max(0.05, Math.Min(max, cap * CapacityTargetPct / 100));
     }
 
     /// <param name="artificialLossPct">Extra random loss applied by the client to UDP in both directions (testing aid).</param>
@@ -122,15 +230,22 @@ public sealed class ClientSession : IDisposable
         {
             config = config.Clone();
             config.Normalize();
-            var ip = await ResolveAsync(host, ct);
+            var ip = await ResolveAsync(host, ct, Family);
+            if (CapacityTest)
+            {
+                // The configured rates are the most to try; the test starts low and ramps up.
+                _maxUp = config.UpMbps; _maxDown = config.DownMbps;
+                if (_maxUp <= 0 && _maxDown <= 0) throw new InvalidOperationException("Set an upload and/or download rate: the capacity test ramps up to it.");
+                config.UpMbps = _maxUp > 0 ? Math.Min(2, _maxUp) : 0;
+                config.DownMbps = _maxDown > 0 ? Math.Min(2, _maxDown) : 0;
+                _baseUp = config.UpMbps; _baseDown = config.DownMbps;
+            }
             ServerEndPoint = new IPEndPoint(ip, port);
             _host = host;
             Emit($"Connecting to {host} ({ip}) port {port}…");
 
-            var ctrlSock = await ConnectTcpAsync(ServerEndPoint, ct);
-            ctrlSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-            ctrlSock.Send(new[] { Protocol.ConnControl });
-            _ctrl = new ControlChannel(ctrlSock);
+            var (ctrlSock, ctrl) = await OpenControlAsync(host, ct);
+            _ctrl = ctrl;
             _ctrl.Send(new ControlMessage
             {
                 Type = "hello", Version = Protocol.Version, AppVersion = Updater.CurrentVersion.ToString(),
@@ -152,6 +267,7 @@ public sealed class ClientSession : IDisposable
 
             SessionId = welcome.SessionId;
             Config = welcome.Config ?? config;
+            if (welcome.MaxMbps > 0) _serverCap = welcome.MaxMbps;
             Updater.TryParseVersion(welcome.AppVersion ?? "0", out _serverVersion);
             _serverAppVersion = welcome.AppVersion;
             if (_serverVersion < new Version(1, 6, 0))
@@ -162,6 +278,7 @@ public sealed class ClientSession : IDisposable
             }
             if (!string.IsNullOrEmpty(welcome.Message)) Emit("Server: " + welcome.Message);
             _lossPct = Math.Clamp(artificialLossPct, 0, 100);
+            _online = ipLookup;
             StartConnectionLookup(host, ctrlSock.LocalEndPoint as IPEndPoint, welcome.ClientAddress, ipLookup);
 
             // Classes, sockets and engines
@@ -247,6 +364,12 @@ public sealed class ClientSession : IDisposable
             if (_tunnels.Count > 0) StartThread("tunnels", TunnelLoop, isSender: true);
 
             if (MeasureMtu && _serverVersion >= new Version(1, 6, 0)) _ = Task.Run(RunMtuTestAsync);
+            if (CapacityTest)
+            {
+                if (_serverVersion < new Version(1, 9, 0)) throw new NotSupportedException("The capacity test needs a 1.9+ server; update the server.");
+                _ = Task.Run(RunCapacityProbeAsync);
+            }
+            else WarmupSec = Config.BaselineSec;
             if (AutoTraceroute) _ = Task.Run(async () => { await Task.Delay(1500, _cts.Token); MaybeTrace("start (baseline)", force: true); });
 
             Emit($"Test running (session {SessionId:X8}): {Config}" + (artificialLossPct > 0 ? $", artificial loss {artificialLossPct}%" : ""));
@@ -276,7 +399,7 @@ public sealed class ClientSession : IDisposable
         string nat = seenIp == null ? "Unknown (server older than 1.4)"
             : local != null && Protocol.Normalize(local.Address).Equals(seenIp) ? "No NAT - the server sees this device's own address"
             : "Behind NAT - the server sees a different (translated) address";
-        var info = new ConnectionInfo($"{host} ({ServerEndPoint})", localStr, seenByServer, nat, null, null, false);
+        var info = new ConnectionInfo($"{host} ({ServerEndPoint}, {FamilyName})", localStr, seenByServer, nat, null, null, false, null, ControlSecurity);
         SetConnection(info);
 
         _ = Task.Run(async () =>
@@ -290,19 +413,159 @@ public sealed class ClientSession : IDisposable
                 var done = info with { SeenByServerInfo = seen, PublicInfo = pub, LookupComplete = true };
                 if (seen != null && pub != null && pub.Error == null && !seen.IsPublic && pub.Ip != seen.Ip)
                     done = done with { NatStatus = $"Not applicable - the test runs over a private path ({seen.Scope}); this device's internet address is {pub.Ip}" };
-                SetConnection(done);
+                SetConnection(done with { DeviceLocation = _lastFix });
                 Emit("Client IP: " + (pub != null ? pub.Summary : seen != null ? seen.Summary : localStr) +
                      (seenByServer != null ? $" | seen by server as {seenByServer}" : ""));
+                if (pub != null && pub.Error == null) _publicIp = pub.Ip;
+                if (online) _ = Task.Run(MonitorPublicIpAsync);
             }
             catch (OperationCanceledException) { }
             catch (Exception e) { Emit("IP lookup failed: " + e.Message); }
         });
     }
 
+    /// <summary>Seconds between checks of this device's public IP (sooner when the network changes).</summary>
+    public int PublicIpCheckSec { get; set; } = 60;
+
+    /// <summary>Re-checks the public IP every minute and whenever the network changes; on a change, looks it up again.</summary>
+    async Task MonitorPublicIpAsync()
+    {
+        var changed = new SemaphoreSlim(0);
+        System.Net.NetworkInformation.NetworkAddressChangedEventHandler onChange = (_, _) => { try { changed.Release(); } catch { } };
+        try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += onChange; } catch { }
+        try
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                bool netChanged = await changed.WaitAsync(TimeSpan.FromSeconds(PublicIpCheckSec), _cts.Token);
+                if (netChanged) await Task.Delay(3000, _cts.Token);   // let the new network settle
+                while (changed.CurrentCount > 0) changed.Wait(0);
+                var ip = await IpLookup.PublicAddressAsync(_cts.Token);
+                if (ip == null) continue;
+                string now = Protocol.Normalize(ip).ToString();
+                string? before = _publicIp;
+                if (before == null) { _publicIp = now; continue; }
+                if (now == before) continue;
+                _publicIp = now;
+                IpLookup.Forget(now);
+                var info = await IpLookup.LookupAsync(ip, true, _cts.Token);
+                lock (_ipChanges) _ipChanges.Add(new IpChange(DateTime.Now, before, now, info.Summary));
+                Emit($"Public IP changed: {before} -> {now} - {info.Summary}");
+                if (Connection is { } c) SetConnection(c with { PublicInfo = info });
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { Emit("Public IP check stopped: " + e.Message); }
+        finally { try { System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= onChange; } catch { } }
+    }
+
+    /// <summary>The server reports that this client's traffic now arrives from another address (1.9+ servers).</summary>
+    void OnSeenByServerChanged(string address)
+    {
+        if (Connection is not { } c || c.SeenByServer == address) return;
+        Emit($"The server now sees this client as {address} (was {c.SeenByServer ?? "?"})");
+        SetConnection(c with { SeenByServer = address });
+        int colon = address.LastIndexOf(':');
+        if (!IPAddress.TryParse(colon > 0 ? address[..colon].Trim('[', ']') : address, out var ip)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var info = await IpLookup.LookupAsync(ip, _online, _cts.Token);
+                if (Connection is { } cur) SetConnection(cur with { SeenByServerInfo = info });
+                Emit("Seen-by-server address: " + info.Summary);
+            }
+            catch { }
+        });
+    }
+
+    /// <summary>The most recent location fix of the device (null unless the app reports locations).</summary>
+    public GeoFix? Location => _lastFix;
+    public IReadOnlyList<GeoFix> Locations { get { lock (_locations) return _locations.ToList(); } }
+
+    /// <summary>
+    /// Records the position of the device with the test data and passes it to the server (1.9+). Only call this when
+    /// the user turned location reporting on.
+    /// </summary>
+    public void ReportLocation(GeoFix fix)
+    {
+        if (!fix.IsValid || !IsRunning) return;
+        var prev = _lastFix;
+        _lastFix = fix;
+        lock (_locations)
+        {
+            // A fix every 10 s, or sooner when the device moved: enough for a drive test, bounded in size.
+            var last = _locations.Count > 0 ? _locations[^1] : null;
+            if (last == null || (fix.At - last.At).TotalSeconds >= 10 || last.DistanceTo(fix) > 25)
+            {
+                _locations.Add(fix);
+                if (_locations.Count > 20000) _locations.RemoveRange(0, 1000);
+            }
+        }
+        if (prev == null) Emit("Device location: " + fix.Text + (fix.Source.Length > 0 ? $" ({fix.Source})" : ""));
+        if (_serverVersion >= new Version(1, 9, 0)) _ctrl?.TrySend(new ControlMessage { Type = "location", Location = fix });
+        if (Connection is { } c) SetConnection(c with { DeviceLocation = fix });
+    }
+
     void SetConnection(ConnectionInfo c)
     {
         Connection = c;
         ConnectionChanged?.Invoke(c);
+    }
+
+    /// <summary>Try TLS for the control connection (1.9+ servers).</summary>
+    public bool UseTls { get; set; } = true;
+    /// <summary>Refuse servers that can't encrypt the control connection.</summary>
+    public bool RequireTls { get; set; }
+    /// <summary>Remembered server certificates (trust on first use); null = accept any certificate.</summary>
+    public KnownServers? KnownServers { get; set; }
+    /// <summary>"TLS 1.3 · certificate AB:CD:…" or a note that the connection is not encrypted.</summary>
+    public string ControlSecurity { get; private set; } = "";
+    public string? ServerFingerprint { get; private set; }
+
+    async Task<(Socket, ControlChannel)> OpenControlAsync(string host, CancellationToken ct)
+    {
+        string serverKey = $"{host}:{ServerEndPoint!.Port}";
+        if (UseTls || RequireTls)
+        {
+            var s = await ConnectTcpAsync(ServerEndPoint, ct);
+            try
+            {
+                s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                s.Send(new[] { Protocol.ConnControlTls });
+                using var t = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                t.CancelAfter(TimeSpan.FromSeconds(10));
+                var (ssl, fp) = await Tls.ClientHandshakeAsync(new NetworkStream(s, ownsSocket: true), host, t.Token);
+                var known = KnownServers?.Get(serverKey);
+                if (known != null && !string.Equals(known, fp, StringComparison.OrdinalIgnoreCase))
+                {
+                    await ssl.DisposeAsync();
+                    throw new ServerCertificateChangedException(serverKey, known, fp);
+                }
+                bool first = KnownServers != null && known == null;
+                if (first) KnownServers!.Trust(serverKey, fp);
+                ServerFingerprint = fp;
+                var ch = new ControlChannel(s, ssl);
+                ControlSecurity = $"{ch.Security} · server certificate {Tls.ShortFingerprint(fp)}" +
+                                  (KnownServers == null ? "" : first ? " (remembered on first use)" : " (matches the remembered one)");
+                Emit("Control connection encrypted: " + ControlSecurity);
+                return (s, ch);
+            }
+            catch (ServerCertificateChangedException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { s.Dispose(); throw; }
+            catch (Exception e)
+            {
+                s.Dispose();
+                // Servers older than 1.9 close the connection on the TLS request.
+                if (RequireTls) throw new IOException("The server does not support an encrypted connection (it may be older than 1.9): " + e.Message, e);
+                Emit("Server doesn't support encryption (older than 1.9?) - the control connection is not encrypted.");
+            }
+        }
+        var plain = await ConnectTcpAsync(ServerEndPoint, ct);
+        plain.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        plain.Send(new[] { Protocol.ConnControl });
+        ControlSecurity = "not encrypted";
+        return (plain, new ControlChannel(plain));
     }
 
     async Task<Socket> OpenStreamAsync(int idx, CancellationToken ct)
@@ -483,6 +746,9 @@ public sealed class ClientSession : IDisposable
                         _finalUs = Clock.NowUs;
                         _final.TrySetResult(true);
                         break;
+                    case "seen":
+                        if (!string.IsNullOrEmpty(m.ClientAddress)) OnSeenByServerChanged(m.ClientAddress);
+                        break;
                     case "info":
                     case "error":
                         Emit("Server: " + m.Message);
@@ -589,9 +855,11 @@ public sealed class ClientSession : IDisposable
             if (worst >= TraceLossThresholdPct) MaybeTrace($"loss {worst:0.#}%");
             else if (gap >= 1000) MaybeTrace($"{gap / 1000:0.0} s stall");
         }
+        if (_probing) _probeQ.Enqueue(sample);
         lock (_series)
         {
             _series.Add(sample);
+            _series.SetLocation(_lastFix);
             for (int i = 0; i < classStats.Count; i++)
             {
                 if (_classSeries.Count <= i) _classSeries.Add(new ClassSeries { Name = classStats[i].Name });
@@ -854,6 +1122,19 @@ public sealed class ClientSession : IDisposable
         {
             record.Samples = _series.Clone();
             record.ClassSeries = _classSeries.Select(c => c.Clone()).ToList();
+            record.Family = FamilyName;
+            if (CapacityTest && WarmupSec > 0)
+            {
+                // Averages of the measured part only (the ramp-up would drag them down).
+                double After(List<double> v) { var x = v.Where((val, i) => i < _series.T.Count && _series.T[i] > WarmupSec + 1 && double.IsFinite(val)).ToList(); return x.Count > 0 ? x.Average() : double.NaN; }
+                if (double.IsFinite(After(_series.Up))) record.UpMbpsAvg = After(_series.Up);
+                if (double.IsFinite(After(_series.Down))) record.DownMbpsAvg = After(_series.Down);
+            }
+            record.WarmupSec = WarmupSec;
+            record.CapacityUpMbps = CapacityUpMbps; record.CapacityDownMbps = CapacityDownMbps;
+            record.CapacityUpAtLimit = CapacityUpAtLimit; record.CapacityDownAtLimit = CapacityDownAtLimit;
+            lock (_locations) record.Locations = _locations.ToList();
+            lock (_ipChanges) record.IpChanges = _ipChanges.ToList();
             record.MaxGapMs = _maxGap;
             record.MosAvg = _mosCount > 0 ? _mosSum / _mosCount : double.NaN;
         }

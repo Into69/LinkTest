@@ -8,7 +8,7 @@ namespace LinkTest.Server;
 public sealed record SessionSnapshot(
     uint Id, string Client, string? ClientVersion, string Mode, DateTime Started, bool Running,
     long RxBytes, long TxBytes, long Lost, long Expected, double RttMs, int Classes,
-    IpInfo? ClientInfo);
+    IpInfo? ClientInfo, GeoFix? Location = null, string? CurrentAddress = null, string? Security = null);
 
 /// <summary>Server side of one client test. Each traffic class has its own engine and sockets.</summary>
 public sealed class ServerSession : IDisposable
@@ -40,6 +40,11 @@ public sealed class ServerSession : IDisposable
     DateTime _startedAt = DateTime.Now;
     string? _clientVersion;
     bool _sendDetail;          // client 1.8+ understands the "stats" message
+    bool _sendSeen;            // client 1.9+ understands the "seen" message
+    volatile GeoFix? _location;
+    volatile string? _lookedUpIp;
+    volatile string? _currentAddress;
+    long _lastRelookupUs;
     volatile IpInfo? _clientInfo;
     int _dscpWarned;
 
@@ -49,13 +54,13 @@ public sealed class ServerSession : IDisposable
     }
     long _prevUs;
 
-    public ServerSession(ServerHost host, Socket control, IPEndPoint remote)
+    public ServerSession(ServerHost host, Socket control, IPEndPoint remote, Stream? stream = null)
     {
         _host = host;
         _remote = remote;
         ClientIp = Protocol.Normalize(remote.Address);
         control.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-        _ctrl = new ControlChannel(control);
+        _ctrl = new ControlChannel(control, stream);
     }
 
     public uint Id { get; private set; }
@@ -94,6 +99,7 @@ public sealed class ServerSession : IDisposable
             if (!Updater.TryParseVersion(hello.AppVersion ?? "0", out var cv)) cv = new Version(0, 0);
             if (cv < new Version(1, 6, 0)) cfg.BaselineSec = 0;
             _sendDetail = cv >= new Version(1, 8, 0);
+            _sendSeen = cv >= new Version(1, 9, 0);
             string? note = null;
             double cap = _host.Options.MaxMbps;
             if (cfg.UpMbps > cap || cfg.DownMbps > cap)
@@ -122,7 +128,7 @@ public sealed class ServerSession : IDisposable
             _ctrl.Send(new ControlMessage
             {
                 Type = "welcome", Version = Protocol.Version, AppVersion = Updater.CurrentVersion.ToString(),
-                SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note,
+                SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note, MaxMbps = _host.Options.MaxMbps,
                 ClientAddress = $"{(ClientIp.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{ClientIp}]" : ClientIp.ToString())}:{_remote.Port}",
             });
             _ = LookupClientAsync(token);
@@ -150,6 +156,17 @@ public sealed class ServerSession : IDisposable
                             TcpReport = reports.Count == 2 ? reports[1] : null,
                             Details = _sendDetail ? _classes.Select(c => c.Eng.BuildDetail(now, final: true)).ToList() : null,
                         });
+                        break;
+                    case "rate":
+                        if (m.Config != null) SetDownloadRate(m.Config.DownMbps);
+                        break;
+                    case "location":
+                        if (m.Location is { IsValid: true } loc)
+                        {
+                            bool first = _location == null;
+                            _location = loc;
+                            if (first) ServerHost.Log($"{Tag} client device location: {loc.Text}");
+                        }
                         break;
                     case "tprobe":
                         _ctrl.TrySend(new ControlMessage { Type = "tprobe_r", Tunnel = m.Tunnel, Seq = m.Seq, Kind = m.Kind, Time = m.Time });
@@ -186,12 +203,22 @@ public sealed class ServerSession : IDisposable
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>Changes the download rate live (capacity test); capped by the server's limit.</summary>
+    void SetDownloadRate(double mbps)
+    {
+        if (!double.IsFinite(mbps) || mbps < 0 || _cfg.DownMbps <= 0) return;
+        mbps = Math.Min(mbps, _host.Options.MaxMbps);
+        double scale = mbps / _cfg.DownMbps;
+        foreach (var c in _classes) c.Eng.RateScale = scale;
+    }
+
     async Task LookupClientAsync(CancellationToken ct)
     {
         try
         {
             var info = await IpLookup.LookupAsync(ClientIp, !_host.Options.NoIpLookup, ct);
             _clientInfo = info;
+            _lookedUpIp = ClientIp.ToString();
             ServerHost.Log($"{Tag} client: {info.Summary}");
         }
         catch (OperationCanceledException) { }
@@ -312,12 +339,39 @@ public sealed class ServerSession : IDisposable
             c.UdpEp = ep;
             string cls = _classes.Count > 1 ? $" ({c.Def.Name})" : "";
             ServerHost.Log(cur == null ? $"{Tag} UDP path{cls} from {ep}" : $"{Tag} UDP source{cls} changed {cur} -> {ep} (NAT rebinding)");
+            if (cur != null) OnClientAddressChanged(ep, now);
             if (c.Def.Dscp > 0)
                 lock (_lock)
                     if (_qos != null && !_qos.TryAdd(_host.UdpSocket, ep, c.Def.Dscp, out var err))
                         DscpWarn(err);
         }
         c.Eng.HandlePacket(pkt, h, now);
+    }
+
+    /// <summary>
+    /// The client's traffic now comes from a different address: tell the client (1.9+) and, when the IP itself
+    /// changed, look it up again (rate limited).
+    /// </summary>
+    void OnClientAddressChanged(IPEndPoint ep, long now)
+    {
+        var ip = Protocol.Normalize(ep.Address);
+        string addr = $"{(ip.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{ip}]" : ip.ToString())}:{ep.Port}";
+        _currentAddress = addr;
+        if (_sendSeen) _ctrl.TrySend(new ControlMessage { Type = "seen", ClientAddress = addr });
+        if (ip.ToString() == _lookedUpIp || now - Interlocked.Read(ref _lastRelookupUs) < 30_000_000) return;
+        Interlocked.Exchange(ref _lastRelookupUs, now);
+        string? before = _lookedUpIp;
+        _lookedUpIp = ip.ToString();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var info = await IpLookup.LookupAsync(ip, !_host.Options.NoIpLookup, _cts.Token);
+                _clientInfo = info;
+                ServerHost.Log($"{Tag} client IP changed {before ?? "?"} -> {ip}: {info.Summary}");
+            }
+            catch { }
+        });
     }
 
     public SessionSnapshot Snapshot()
@@ -333,7 +387,7 @@ public sealed class ServerSession : IDisposable
         var first = _classes.FirstOrDefault(c => c.IsUdp) ?? _classes.FirstOrDefault();
         string mode = _cfg.DscpSimulate ? $"DSCP sim ({_classes.Count})" : _cfg.Protocol.ToString();
         return new SessionSnapshot(Id, ClientIp.ToString(), _clientVersion, mode, _startedAt, _started,
-            rx, tx, lost, exp, first != null ? first.Eng.SmoothedRttUs / 1000 : double.NaN, _classes.Count, _clientInfo);
+            rx, tx, lost, exp, first != null ? first.Eng.SmoothedRttUs / 1000 : double.NaN, _classes.Count, _clientInfo, _location, _currentAddress, _ctrl.Security);
     }
 
     public void PrintStatus()

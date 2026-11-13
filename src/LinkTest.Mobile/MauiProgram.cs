@@ -20,5 +20,5 @@ public sealed class App : Application
     }
 
     protected override Window CreateWindow(IActivationState? activationState) =>
-        new(new NavigationPage(new MainTabs()) { BarBackgroundColor = Ui.Brand, BarTextColor = Colors.White }) { Title = "LinkTest" };
+        new(new NavigationPage(new MainTabs()) { BarBackgroundColor = Colors.White, BarTextColor = Ui.Brand }) { Title = "LinkTest" };
 }

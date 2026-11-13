@@ -21,6 +21,10 @@ public sealed class ServerHost
 
     public ServerHost(ServerOptions opts) => _opts = opts;
 
+    System.Security.Cryptography.X509Certificates.X509Certificate2? _cert;
+    /// <summary>SHA-256 fingerprint of the server certificate (clients show it so users can compare).</summary>
+    public string? CertificateFingerprint { get; private set; }
+
     public ServerOptions Options => _opts;
     public int SessionCount => _sessions.Count;
     public Socket UdpSocket => _udp;
@@ -44,10 +48,18 @@ public sealed class ServerHost
     public async Task RunAsync(CancellationToken ct)
     {
         (_listener, _udp) = CreateSockets();
+        try
+        {
+            _cert = Tls.LoadOrCreateServerCertificate(_opts.CertificatePath ?? Tls.DefaultServerCertPath);
+            CertificateFingerprint = Tls.Fingerprint(_cert);
+        }
+        catch (Exception e) { Log("TLS unavailable (clients will connect unencrypted): " + e.Message); }
         _udpDf = CreateDfSocket();
         Log($"LinkTest server {Updater.CurrentVersion} listening on TCP+UDP port {_opts.Port}" +
             (_opts.Key != null ? " (key required)" : "") + $", cap {_opts.MaxMbps} Mbps/direction, max {_opts.MaxSessions} sessions");
         foreach (var a in LocalAddresses()) Log($"  local address: {a}");
+        if (CertificateFingerprint != null)
+            Log($"  TLS certificate SHA-256: {CertificateFingerprint}" + (_opts.RequireTls ? " (encryption required)" : ""));
 
         var udpThread = new Thread(UdpLoop) { IsBackground = true, Name = "udp-rx", Priority = ThreadPriority.AboveNormal };
         udpThread.Start();
@@ -145,16 +157,31 @@ public sealed class ServerHost
                 if (!await Protocol.ReceiveExactAsync(c, first, t.Token)) { c.Dispose(); return; }
             }
 
-            if (first[0] == Protocol.ConnControl)
+            if (first[0] == Protocol.ConnControl || first[0] == Protocol.ConnControlTls)
             {
-                if (_sessions.Count >= _opts.MaxSessions)
+                Stream? stream = null;
+                if (first[0] == Protocol.ConnControlTls)
+                {
+                    if (_cert == null) { c.Dispose(); return; }
+                    using var t = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    t.CancelAfter(TimeSpan.FromSeconds(10));
+                    stream = await Tls.ServerHandshakeAsync(new NetworkStream(c, ownsSocket: true), _cert, t.Token);
+                }
+                else if (_opts.RequireTls)
                 {
                     using var ch = new ControlChannel(c);
+                    ch.TrySend(new ControlMessage { Type = "error", Message = "This server requires an encrypted connection: update the client to 1.9 or newer." });
+                    Log($"Rejected {remote}: unencrypted client");
+                    return;
+                }
+                if (_sessions.Count >= _opts.MaxSessions)
+                {
+                    using var ch = new ControlChannel(c, stream);
                     ch.TrySend(new ControlMessage { Type = "error", Message = "Server is busy (too many sessions)" });
                     Log($"Rejected {remote}: too many sessions");
                     return;
                 }
-                using var session = new ServerSession(this, c, remote);
+                using var session = new ServerSession(this, c, remote, stream);
                 await session.RunAsync(ct);
             }
             else if (first[0] == Protocol.ConnStream)
@@ -182,7 +209,7 @@ public sealed class ServerHost
                 c.Dispose();
             }
         }
-        catch (Exception e) when (e is OperationCanceledException or SocketException or IOException)
+        catch (Exception e) when (e is OperationCanceledException or SocketException or IOException or System.Security.Authentication.AuthenticationException)
         {
             c.Dispose();
         }

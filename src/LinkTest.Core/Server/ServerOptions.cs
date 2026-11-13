@@ -14,6 +14,10 @@ public sealed class ServerOptions
     public int MaxSessions { get; set; } = 8;
     /// <summary>Do not query ipinfo.io for client ISP / location (reverse DNS is still done).</summary>
     public bool NoIpLookup { get; set; }
+    /// <summary>Refuse clients that don't encrypt the control connection (clients older than 1.9).</summary>
+    public bool RequireTls { get; set; }
+    /// <summary>Server certificate file (created on first start); null = the per-user default.</summary>
+    public string? CertificatePath { get; set; }
     public bool AutoUpdate { get; set; }
     public bool NoUpdateCheck { get; set; }
     public bool UpdateNow { get; set; }
@@ -38,6 +42,8 @@ public sealed class ServerOptions
                     case "--max-mbps": o.MaxMbps = double.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--max-sessions": o.MaxSessions = int.Parse(Next()); break;
                     case "--auto-update": o.AutoUpdate = true; break;
+                    case "--require-tls": o.RequireTls = true; break;
+                    case "--cert": o.CertificatePath = Next(); break;
                     case "--no-ip-lookup": o.NoIpLookup = true; break;
                     case "--no-update-check": o.NoUpdateCheck = true; break;
                     case "--update": o.UpdateNow = true; break;

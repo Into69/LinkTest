@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using LinkTest.Core;
+using LinkTest.WinUi;
 
 namespace LinkTest.Client;
 
@@ -36,6 +38,28 @@ sealed class LineChart : Control
     public string ValueFormat { get; set; } = "0.##";
 
     public void AddSeries(string name, Color color) => _series.Add(new Series { Name = name, Color = color });
+
+    StatInfo? _help;
+    RectangleF _helpRect;
+
+    /// <summary>Shows an ⓘ after the title: hover for a summary, click for details.</summary>
+    public void SetHelp(string key, ToolTip tips)
+    {
+        _help = StatHelp.Get(key);
+        if (_help != null) tips.SetToolTip(this, _help.Title + "\n" + _help.Short + "\n(click ⓘ for details)");
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        Cursor = _help != null && _helpRect.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (_help != null && _helpRect.Contains(e.Location)) HelpUi.Show(FindForm(), _help);
+    }
 
     /// <summary>One value per series, in AddSeries order. Use NaN for "no data".</summary>
     public void Push(params double[] values)
@@ -73,7 +97,17 @@ sealed class LineChart : Control
         using var gridPen = new Pen(Color.FromArgb(230, 230, 230));
         using var axisBrush = new SolidBrush(Color.FromArgb(110, 110, 110));
         using var titleFont = new Font(Font, FontStyle.Bold);
-        g.DrawString(Title + (Unit.Length > 0 ? $" ({Unit})" : ""), titleFont, Brushes.Black, 4 * k, 3 * k);
+        string title = Title + (Unit.Length > 0 ? $" ({Unit})" : "");
+        g.DrawString(title, titleFont, Brushes.Black, 4 * k, 3 * k);
+        if (_help != null)
+        {
+            var tsz = g.MeasureString(title, titleFont);
+            using var infoFont = new Font("Segoe UI", Font.Size + 1);
+            var isz = g.MeasureString(HelpUi.Glyph, infoFont);
+            _helpRect = new RectangleF(4 * k + tsz.Width, 1 * k, isz.Width + 2 * k, isz.Height + 2 * k);
+            using var ib = new SolidBrush(Color.FromArgb(0, 95, 184));
+            g.DrawString(HelpUi.Glyph, infoFont, ib, _helpRect.X + 1 * k, 2 * k);
+        }
 
         for (int i = 0; i <= 4; i++)
         {
@@ -148,7 +182,7 @@ sealed class StatTile : Panel
 
     public StatTile(string title)
     {
-        Width = 150;
+        Width = 182;   // room for the title and its ⓘ
         Height = 78;
         Padding = new Padding(8, 4, 8, 4);
         Margin = new Padding(4);
@@ -160,6 +194,13 @@ sealed class StatTile : Panel
         Controls.Add(_value);
         Controls.Add(_sub);
         Controls.Add(_title);
+    }
+
+    /// <summary>Adds an ⓘ to the title: hover for a summary, click for details.</summary>
+    public void SetHelp(string key, ToolTip tips)
+    {
+        var info = HelpUi.InfoLabel(key, tips, DockStyle.Right);
+        _title.Controls.Add(info);
     }
 
     public void Set(string value, string sub = "", Color? color = null)

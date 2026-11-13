@@ -1,3 +1,4 @@
+using LinkTest.WinUi;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
@@ -21,6 +22,7 @@ sealed class ServerForm : Form
     readonly NumericUpDown _maxSessions = Num(1, 64);
     readonly CheckBox _startOnLaunch = new() { Text = "Start the server when this window opens", AutoSize = true };
     readonly CheckBox _lookupClients = new() { Text = "Look up client IP details (ISP, location via ipinfo.io)", AutoSize = true };
+    readonly CheckBox _requireTls = new() { Text = "Require encrypted clients (TLS, client 1.9+)", AutoSize = true };
     readonly CheckBox _autoInstall = new() { Text = "Install updates automatically when no tests are running", AutoSize = true };
     readonly Button _startBtn = new() { Text = "Start server", Height = 36, Width = 150 };
     readonly Button _stopBtn = new() { Text = "Stop server", Height = 36, Width = 120, Enabled = false };
@@ -107,11 +109,15 @@ sealed class ServerForm : Form
         var checks = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0) };
         checks.Controls.Add(_startOnLaunch);
         checks.Controls.Add(_lookupClients);
+        checks.Controls.Add(_requireTls);
+        _tips.SetToolTip(_requireTls, "The control connection (key, settings, results) is always encrypted for 1.9+ clients. " +
+                                      "Tick this to refuse older clients, whose control connection would be unencrypted.\n" +
+                                      "Clients remember this server's certificate fingerprint (shown below when running) the first time they connect.");
         _tips.SetToolTip(_lookupClients, "Public client addresses are looked up at ipinfo.io; private/LAN addresses get reverse DNS only.");
         checks.Controls.Add(_autoInstall);
         settings.Controls.Add(checks, 2, 2);
         settings.SetColumnSpan(checks, 2);
-        _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients });
+        _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients, _requireTls });
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 6, 12, 6), BackColor = Color.FromArgb(235, 238, 242), WrapContents = true };
         _startBtn.Font = new Font(Font, FontStyle.Bold);
@@ -125,12 +131,19 @@ sealed class ServerForm : Form
         var addrPanel = new Panel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6) };
         addrPanel.Controls.Add(_addresses);
 
-        foreach (var (name, w) in new[] { ("Session", 80), ("Client", 130), ("Host (reverse DNS)", 170), ("ISP / ASN", 180), ("Location", 160), ("Version", 60),
+        foreach (var (name, w) in new[] { ("Session", 80), ("Client", 130), ("Host (reverse DNS)", 170), ("ISP / ASN", 180), ("IP location", 160), ("Device location", 190), ("Version", 60),
                                           ("Mode", 110), ("Duration", 70), ("Rx / upload Mbps", 110), ("Tx / download Mbps", 120), ("Loss %", 60), ("RTT ms", 60), ("Classes", 55) })
             _sessions.Columns.Add(name, (int)(w * DeviceDpi / 96f));
 
         var sessionsBox = new GroupBox { Text = "Active tests", Dock = DockStyle.Fill, Padding = new Padding(6) };
         sessionsBox.Controls.Add(_sessions);
+        _sessions.DoubleClick += (_, _) =>
+        {
+            // Double-click a session that shares its device location to see it on a map.
+            if (_sessions.SelectedItems.Count > 0 && _sessions.SelectedItems[0].Tag is GeoFix g)
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(g.MapUrl) { UseShellExecute = true }); } catch { }
+        };
+        sessionsBox.Controls.Add(HelpUi.GroupLink("server", "Session columns"));   // ⓘ what each column means, with ideal values
         var logBox = new GroupBox { Text = "Log", Dock = DockStyle.Fill, Padding = new Padding(6) };
         logBox.Controls.Add(_log);
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
@@ -219,6 +232,7 @@ sealed class ServerForm : Form
         _maxSessions.Value = Math.Clamp(_settings.MaxSessions, 1, 64);
         _startOnLaunch.Checked = _settings.StartOnLaunch;
         _lookupClients.Checked = _settings.LookupClients;
+        _requireTls.Checked = _settings.RequireTls;
         _autoInstall.Checked = _settings.AutoInstallUpdates;
         _status.Text = "Server stopped";
     }
@@ -232,6 +246,7 @@ sealed class ServerForm : Form
         _settings.MaxSessions = (int)_maxSessions.Value;
         _settings.StartOnLaunch = _startOnLaunch.Checked;
         _settings.LookupClients = _lookupClients.Checked;
+        _settings.RequireTls = _requireTls.Checked;
         _settings.AutoInstallUpdates = _autoInstall.Checked;
         _settings.Save();
     }
@@ -266,6 +281,7 @@ sealed class ServerForm : Form
             MaxMbps = (double)_maxMbps.Value,
             MaxSessions = (int)_maxSessions.Value,
             NoIpLookup = !_lookupClients.Checked,
+            RequireTls = _requireTls.Checked,
         };
         _host = new ServerHost(opts) { PeriodicStatus = false };
         _hostCts = new CancellationTokenSource();
@@ -278,6 +294,13 @@ sealed class ServerForm : Form
         _state.ForeColor = Color.ForestGreen;
         var addrs = opts.Bind != null ? new List<IPAddress> { opts.Bind } : LocalAddresses();
         _addresses.Text = "Clients can connect to: " + (addrs.Count > 0 ? string.Join("   ", addrs.Select(a => a.ToString())) : "(no network addresses found)");
+        _ = Task.Run(async () =>
+        {
+            // The certificate is loaded / created when the host starts.
+            for (int i = 0; i < 50 && host.CertificateFingerprint == null; i++) await Task.Delay(100);
+            if (host.CertificateFingerprint is { } fp)
+                BeginInvoke(() => { if (_host == host) _addresses.Text += $"\nTLS certificate SHA-256: {fp}" + (_requireTls.Checked ? "  (encryption required)" : ""); });
+        });
         _status.Text = $"Listening on TCP+UDP port {opts.Port}";
         _timer.Start();
     }
@@ -345,14 +368,16 @@ sealed class ServerForm : Form
             var dur = now - s.Started;
             var item = new ListViewItem(new[]
             {
-                s.Id.ToString("X8"), s.Client,
+                s.Id.ToString("X8"), s.CurrentAddress != null && !s.CurrentAddress.StartsWith(s.Client + ":") ? $"{s.Client} (now {s.CurrentAddress})" : s.Client,
                 s.ClientInfo == null ? "looking up…" : s.ClientInfo.Hostname ?? "-",
                 s.ClientInfo == null ? "" : s.ClientInfo.Org ?? (s.ClientInfo.IsPublic ? "-" : s.ClientInfo.Scope),
                 s.ClientInfo == null ? "" : s.ClientInfo.Location.Length > 0 ? s.ClientInfo.Location : "-",
-                s.ClientVersion ?? "?", s.Mode,
+                s.Location?.Text ?? "not shared",
+                (s.ClientVersion ?? "?") + (s.Security != null ? " 🔒" : ""), s.Mode,
                 s.Running ? $"{(int)dur.TotalHours}:{dur.Minutes:00}:{dur.Seconds:00}" : "starting",
                 rx, tx, loss, double.IsFinite(s.RttMs) ? s.RttMs.ToString("0.0", CultureInfo.CurrentCulture) : "–", s.Classes.ToString(),
             });
+            item.Tag = s.Location;
             _sessions.Items.Add(item);
         }
         _sessions.EndUpdate();

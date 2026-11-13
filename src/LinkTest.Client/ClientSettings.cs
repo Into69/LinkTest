@@ -17,6 +17,13 @@ sealed class ClientSettings
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
     public bool CheckForUpdates { get; set; } = true;
     public bool IpLookup { get; set; } = true;
+    /// <summary>Report this PC's location with the test data and to the server. Off by default.</summary>
+    public bool ShareLocation { get; set; }
+    /// <summary>"auto", "4", "6" or "both" (IPv4 then IPv6 with a comparison).</summary>
+    public string Family { get; set; } = "auto";
+    public bool RequireTls { get; set; }
+    public bool CapacityTest { get; set; }
+    public double CapacityPct { get; set; } = 80;
     public bool MeasureMtu { get; set; } = true;
     public bool AutoTraceroute { get; set; } = true;
     public string ResultsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LinkTest", "Results");

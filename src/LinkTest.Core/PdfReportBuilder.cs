@@ -19,6 +19,69 @@ public static class PdfReportBuilder
 
     static string N(double v, string fmt = "0.##") => double.IsFinite(v) ? v.ToString(fmt, Inv) : "–";
 
+    /// <summary>Side-by-side PDF of two tests (e.g. IPv4 vs IPv6).</summary>
+    public static byte[] BuildComparison(Comparison c)
+    {
+        var a = c.RecA; var b = c.RecB;
+        var pdf = new PdfWriter { Title = $"LinkTest {c.LabelA} vs {c.LabelB} {a.StartedAt:yyyy-MM-dd HH:mm}", Author = "LinkTest " + a.AppVersion };
+        var f = new Flow(pdf, a);
+        f.Page.Rect(0, 0, PdfWriter.PageWidth, 78, fill: PdfColor.Hex("0b1e3a"));
+        f.Page.Text(M, 34, $"{c.LabelA} vs {c.LabelB}", 20, true, PdfColor.White);
+        f.Page.Text(M, 52, $"{a.Server.Split(' ')[0]} · {a.Mode}", 10.5, false, PdfColor.Hex("c9d6e8"));
+        f.Page.Text(PdfWriter.PageWidth - M, 34, $"{a.StartedAt:yyyy-MM-dd HH:mm}", 11, true, PdfColor.White, PdfAlign.Right);
+        f.Y = 100;
+        var head = PdfText.Wrap(c.Headline, W - 30, 11.5, true);
+        double boxH = 22 + head.Count * 15 + 14;
+        f.Page.Rect(M, f.Y, W, boxH, fill: Band);
+        f.Page.Rect(M, f.Y, 5, boxH, fill: Accent);
+        double y = f.Y + 20;
+        foreach (var l in head) { f.Page.Text(M + 16, y, l, 11.5, true, Text); y += 15; }
+        f.Page.Text(M + 16, y + 2, "The tests ran one after the other with the same settings; conditions on the link can change in between.", 8, false, Muted);
+        f.Y += boxH + 14;
+
+        f.Heading("Results");
+        var cols = new (string h, double w, PdfAlign a)[] { ("", 175, PdfAlign.Left), (c.LabelA, 110, PdfAlign.Right), (c.LabelB, 110, PdfAlign.Right), ($"{c.LabelB} - {c.LabelA}", 120.28, PdfAlign.Right) };
+        f.TableHeader(cols);
+        foreach (var l in c.Lines)
+        {
+            f.Need(14);
+            double x = M, ry = f.Y;
+            string[] cells = { l.Name, l.A, l.B, l.Diff };
+            for (int i = 0; i < cells.Length; i++)
+            {
+                var col = i == 1 && l.Better < 0 || i == 2 && l.Better > 0 ? Good : (PdfColor?)null;
+                f.Cell(x, ry + 10, cols[i].w, cells[i], cols[i].a, 8, i == 0 || col != null, col);
+                x += cols[i].w;
+            }
+            f.Page.Line(M, ry + 14, M + W, ry + 14, Line, 0.4);
+            f.Y += 14;
+        }
+        f.Small("Green = clearly better (small differences are treated as alike).");
+
+        int n = Math.Min(a.Samples.T.Count, b.Samples.T.Count);
+        if (n > 1)
+        {
+            f.Heading("Over time");
+            var t = a.Samples.T.Take(n).ToList();
+            List<double> Cut(List<double> v) => v.Take(n).ToList();
+            f.Chart("Download throughput (Mbps)", t, new[] { (c.LabelA, S1, Cut(a.Samples.Down)), (c.LabelB, S3, Cut(b.Samples.Down)) }, 0);
+            f.Chart("Round-trip time (ms)", t, new[] { (c.LabelA, S1, Cut(a.Samples.Rtt)), (c.LabelB, S3, Cut(b.Samples.Rtt)) }, 0);
+            static double Z(double v) => double.IsFinite(v) ? v : 0;
+            List<double> Worst(SampleSeries s) => Enumerable.Range(0, n).Select(i => Math.Max(Z(s.LossUp[i]), Z(s.LossDown[i]))).ToList();
+            f.Chart("Packet loss, worst direction (%)", t, new[] { (c.LabelA, S1, Worst(a.Samples)), (c.LabelB, S3, Worst(b.Samples)) }, 0);
+        }
+        f.Heading("Addresses");
+        foreach (var (lbl, r) in new[] { (c.LabelA, a), (c.LabelB, b) })
+        {
+            f.Need(14);
+            f.Page.Text(M, f.Y + 10, lbl, 8.5, true, Muted);
+            f.Page.Text(M + 110, f.Y + 10, PdfText.Fit(r.Server + (r.Connection?.PublicInfo is { } p ? " · public " + p.Ip : ""), W - 110, 8.5, false), 8.5, false, Text);
+            f.Y += 13;
+        }
+        f.Footers();
+        return pdf.ToBytes();
+    }
+
     public static byte[] Build(TestRecord r)
     {
         var pdf = new PdfWriter { Title = $"LinkTest traffic report {r.StartedAt:yyyy-MM-dd HH:mm}", Author = "LinkTest " + r.AppVersion };
@@ -134,9 +197,45 @@ public static class PdfReportBuilder
         {
             f.Heading("Throughput, latency and loss");
             var t = r.Samples.T;
-            f.Chart("Throughput (Mbps)", t, new[] { ("Upload", S1, r.Samples.Up), ("Download", S2, r.Samples.Down) }, r.Config.BaselineSec);
-            f.Chart("Round-trip time (ms)", t, new[] { ("Average", S1, r.Samples.Rtt), ("Max", S3, r.Samples.RttMax) }, r.Config.BaselineSec);
-            f.Chart("Packet loss (%)", t, new[] { ("Upload", S1, r.Samples.LossUp), ("Download", S3, r.Samples.LossDown) }, r.Config.BaselineSec);
+            string shade = r.WarmupSec > r.Config.BaselineSec + 0.5 ? "warm-up" : "idle";
+            f.Chart("Throughput (Mbps)", t, new[] { ("Upload", S1, r.Samples.Up), ("Download", S2, r.Samples.Down) }, r.JudgeAfterSec, shade);
+            f.Chart("Round-trip time (ms)", t, new[] { ("Average", S1, r.Samples.Rtt), ("Max", S3, r.Samples.RttMax) }, r.JudgeAfterSec, shade);
+            f.Chart("Packet loss (%)", t, new[] { ("Upload", S1, r.Samples.LossUp), ("Download", S3, r.Samples.LossDown) }, r.JudgeAfterSec, shade);
+        }
+
+        // ---- Route
+        if (RouteMap.Build(r, W, 300) is { } route)
+        {
+            f.Need(380);
+            f.Heading("Route");
+            f.Para(route.Summary + " Each second is coloured by link quality: poor = loss over 1%, RTT over 150 ms or a 1 s gap; " +
+                   "fair = loss over 0.1%, RTT over 50 ms, jitter over 30 ms or a gap over 250 ms.", 8.5);
+            double y0 = f.Y;
+            f.Page.Rect(M, y0, W, route.Height, fill: Band);
+            foreach (var run in route.Runs)
+            {
+                var c = run.Level switch { StatLevel.Good => Good, StatLevel.Fair => Warn, StatLevel.Poor => Bad, _ => Grey };
+                f.Page.Polyline(run.Points.Select(p => (M + p.x, y0 + p.y)).ToList(), c, 2.6);
+            }
+            foreach (var (pt, label) in new[] { (route.Start, "Start"), (route.End, "End") })
+            {
+                f.Page.Rect(M + pt.x - 3.5, y0 + pt.y - 3.5, 7, 7, fill: PdfColor.White, stroke: Text, lineWidth: 1.2);
+                f.Page.Text(M + pt.x + 7, y0 + pt.y + 3, label, 8, true, Text);
+            }
+            double sy = y0 + route.Height - 10;
+            f.Page.Line(M + 12, sy, M + 12 + route.ScaleLength, sy, Text, 1.2);
+            f.Page.Text(M + 12, sy - 4, route.ScaleText, 7, false, Muted);
+            f.Page.Text(M + W - 8, y0 + 14, "N ^", 8, true, Muted, PdfAlign.Right);
+            f.Y += route.Height + 8;
+            double lx = M;
+            foreach (var (lvl, name) in new[] { (StatLevel.Good, "good"), (StatLevel.Fair, "fair"), (StatLevel.Poor, "poor"), (StatLevel.Info, "no data") })
+            {
+                var c = lvl switch { StatLevel.Good => Good, StatLevel.Fair => Warn, StatLevel.Poor => Bad, _ => Grey };
+                f.Page.Rect(lx, f.Y + 2, 8, 6, fill: c);
+                f.Page.Text(lx + 11, f.Y + 8, name, 7.5, false, Muted);
+                lx += 60;
+            }
+            f.Y += 16;
         }
 
         // ---- Tunnels
@@ -204,6 +303,13 @@ public static class PdfReportBuilder
             ("Started / ended", $"{r.StartedAt:yyyy-MM-dd HH:mm:ss} / {r.EndedAt:HH:mm:ss} ({r.EndReason})"),
             ("Idle baseline", r.Config.BaselineSec > 0 ? $"{r.Config.BaselineSec} s, bufferbloat grade {r.BloatGrade ?? "–"}" : "off"),
         };
+        if (r.Locations.Any(l => l.IsValid)) setup.Add(("Device location", GeoFix.Describe(r.Locations)));
+        if (r.Family != null) setup.Add(("Address family", r.Family));
+        if (r.Connection?.Security is { } ctrlSec) setup.Add(("Control connection", ctrlSec));
+        if (double.IsFinite(r.CapacityUpMbps) || double.IsFinite(r.CapacityDownMbps))
+            setup.Add(("Capacity test", $"found up {Cap(r.CapacityUpMbps, r.CapacityUpAtLimit)}, down {Cap(r.CapacityDownMbps, r.CapacityDownAtLimit)}; " +
+                                        $"tested at {N(r.Config.UpMbps, "0.###")} / {N(r.Config.DownMbps, "0.###")} Mbps after a {N(r.WarmupSec, "0")} s ramp-up (left out of the judgement)"));
+        foreach (var ch in r.IpChanges) setup.Add(($"Public IP changed {ch.At:HH:mm:ss}", $"{ch.From} -> {ch.To}: {ch.Details}"));
         if (r.Mtu is { } mtu) setup.Add(("Path MTU", mtu.Summary));
         foreach (var tr in r.Traces.Where(x => x.Error == null).Take(4)) setup.Add(($"Traceroute {tr.At:HH:mm:ss}", tr.Summary));
         foreach (var (k, v) in setup)
@@ -228,6 +334,8 @@ public static class PdfReportBuilder
     }
 
     static string Ms(double v) => !double.IsFinite(v) ? "–" : (v >= 10 ? v.ToString("0", Inv) : v >= 1 ? v.ToString("0.#", Inv) : v.ToString("0.##", Inv)) + " ms";
+
+    static string Cap(double v, bool atLimit) => double.IsFinite(v) ? $"{(atLimit ? "at least " : "")}{N(v, "0.##")} Mbps" : "not tested";
 
     static string Mb(double v) => !double.IsFinite(v) ? "–" : v >= 10 ? v.ToString("0", Inv) : v >= 1 ? v.ToString("0.#", Inv) : v.ToString("0.##", Inv);
 
@@ -340,7 +448,7 @@ public static class PdfReportBuilder
             Y += height;
         }
 
-        public void Chart(string title, List<double> t, (string name, PdfColor color, List<double> data)[] series, int baselineSec)
+        public void Chart(string title, List<double> t, (string name, PdfColor color, List<double> data)[] series, double baselineSec, string shadeLabel = "idle")
         {
             const double h = 110;
             Need(h + 30);
@@ -368,7 +476,7 @@ public static class PdfReportBuilder
             {
                 double bx = px + pw * Math.Min(1, (baselineSec - t0) / (t1 - t0));
                 Page.Rect(px, py, bx - px, ph, fill: PdfColor.Hex("f4f6f9"));
-                Page.Text(px + 3, py + 8, "idle", 6.5, false, Muted);
+                Page.Text(px + 3, py + 8, shadeLabel, 6.5, false, Muted);
             }
             foreach (var (_, color, d) in series)
             {

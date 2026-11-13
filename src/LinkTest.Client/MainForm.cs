@@ -1,5 +1,6 @@
 using System.Globalization;
 using LinkTest.Core;
+using LinkTest.WinUi;
 using LinkTest.Core.Tunnels;
 
 namespace LinkTest.Client;
@@ -35,13 +36,24 @@ sealed class MainForm : Form
     readonly Button _history = new() { Text = "History", Height = 36, Dock = DockStyle.Fill };
     readonly Button _pdf = new() { Text = "PDF report…", Height = 36, Dock = DockStyle.Fill };
     readonly ToolStripStatusLabel _reportLink = new() { IsLink = true, Visible = false, Text = "Open report" };
+    readonly ToolStripStatusLabel _compareLink = new() { IsLink = true, Visible = false, Text = "Open IPv4 vs IPv6" };
+    static readonly string[] FamilyItems = { "Auto (IPv4 first)", "IPv4 only", "IPv6 only", "IPv4, then IPv6 (compare)" };
+    readonly ComboBox _family = Combo(FamilyItems);
+    readonly CheckBox _requireTls = new() { Text = "Require an encrypted connection", AutoSize = true };
+    readonly CheckBox _capacity = new() { Text = "Find the capacity first (ramp up to the rates above)", AutoSize = true };
+    readonly NumericUpDown _capacityPct = Num(10, 100, 0);
+    readonly KnownServers _known = new(KnownServers.DefaultPath);
+    // IPv4-then-IPv6 comparison in progress: 0 = none, 4 = IPv4 test running, 6 = IPv6 test running.
+    int _compareStage;
+    TestRecord? _compareFirst;
+    string? _lastComparisonPath;
     ResultStore Results => new(_settings.ResultsFolder);
     TestRecord? _lastRecord;
     readonly List<Control> _inputs = new();
 
     // live view
-    readonly StatTile _tUp = new("Upload (client→server)");
-    readonly StatTile _tDown = new("Download (server→client)");
+    readonly StatTile _tUp = new("Upload (to server)");
+    readonly StatTile _tDown = new("Download (from server)");
     readonly StatTile _tRtt = new("Round-trip time");
     readonly StatTile _tJitter = new("Jitter ↑ / ↓");
     readonly StatTile _tLoss = new("Loss ↑ / ↓ (interval)");
@@ -63,6 +75,8 @@ sealed class MainForm : Form
     readonly TabControl _bottomTabs = new() { Dock = DockStyle.Fill };
     readonly ListView _connView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true, HeaderStyle = ColumnHeaderStyle.Nonclickable };
     readonly CheckBox _ipLookup = new() { Text = "Look up my public IP details (ipinfo.io)", AutoSize = true };
+    readonly CheckBox _shareLocation = new() { Text = "Report my location with the test", AutoSize = true };
+    CancellationTokenSource? _locationCts;
     readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
     readonly ToolStripStatusLabel _status = new() { Text = "Idle", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
@@ -114,6 +128,7 @@ sealed class MainForm : Form
         _proto.SelectedIndexChanged += (_, _) => OnProtocolChanged();
         _profile.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
         _dscp.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
+        _capacity.CheckedChanged += (_, _) => UpdateEnabledInputs();
         _loss.ValueChanged += (_, _) =>
         {
             if (_session is { IsRunning: true } s && Math.Abs(s.ArtificialLossPct - (double)_loss.Value) > 1e-9)
@@ -138,8 +153,20 @@ sealed class MainForm : Form
         Row(form, "Server IP / FQDN", _host, "Address or DNS name of the machine running LinkTestServer.exe");
         Row(form, "Port", _port, "TCP and UDP port of the server (default 7447)");
         Row(form, "Key", _key, "Shared key, if the server was started with --key");
+        Row(form, "Address family", _family, "Auto: IPv4 if the server has an IPv4 address, else IPv6.\n" +
+            "IPv4 only / IPv6 only: test over that family (enter the server's name, or an address of that family).\n" +
+            "IPv4, then IPv6: runs the test twice, one after the other, and makes a side-by-side comparison report (needs a duration).");
+        form.Controls.Add(_requireTls); form.SetColumnSpan(_requireTls, 2);
+        _inputs.Add(_requireTls);
+        _tips.SetToolTip(_requireTls, "The control connection (key, settings, results) is encrypted with TLS whenever the server supports it (1.9+). " +
+                                      "Tick this to refuse servers that can't encrypt.\nThe server's certificate is remembered the first time; if it changes later you're asked before connecting.");
         form.Controls.Add(_ipLookup); form.SetColumnSpan(_ipLookup, 2);
         _inputs.Add(_ipLookup);
+        form.Controls.Add(_shareLocation); form.SetColumnSpan(_shareLocation, 2);
+        _inputs.Add(_shareLocation);
+        _tips.SetToolTip(_shareLocation, "Off by default. When on, this PC's position from the Windows location service (GPS / Wi-Fi) is recorded " +
+                                         "with the test results and reports, and sent to the server, every 15 s while a test runs.\n" +
+                                         "Needs Settings > Privacy & security > Location > \"Let desktop apps access your location\".");
         _tips.SetToolTip(_ipLookup, "When a test starts, look up this computer's public IP address, ISP (ASN), approximate location and reverse DNS via ipinfo.io. " +
             "Shown on the Connection tab. Private / LAN addresses are never sent out. The server does the same lookup of the client's address.");
 
@@ -149,6 +176,12 @@ sealed class MainForm : Form
         Row(form, "UDP share (%)", _udpShare, "Mixed mode: percentage of each direction's rate sent as UDP; the rest goes over the TCP streams.");
         Row(form, "Upload / TX (Mbps)", _up, "Client → server payload rate. 0 = heartbeats only (monitoring mode).");
         Row(form, "Download / RX (Mbps)", _down, "Server → client payload rate. 0 = heartbeats only (monitoring mode).");
+        form.Controls.Add(_capacity); form.SetColumnSpan(_capacity, 2);
+        _inputs.Add(_capacity);
+        _tips.SetToolTip(_capacity, "Capacity test: start at a few Mbps and ramp up (×1.6 every 3 s) until the link saturates or the upload / download " +
+                                    "rates above are reached, then run the test at the percentage below of the capacity found.\n" +
+                                    "The ramp-up is left out when traffic is judged. Needs a 1.9+ server.");
+        Row(form, "…then test at (% of capacity)", _capacityPct, "Rate for the rest of the test, as a share of the capacity found. 80% leaves headroom, like a busy but not overloaded link.");
         Row(form, "Packet size (bytes)", _size, "UDP payload per datagram (keep ≤1472 to avoid IP fragmentation, ≤1400 for VPN paths) or TCP write size.");
         Row(form, "Traffic profile", _profile,
             "Constant: evenly paced fixed-size packets\nImix: 64/576/1500 B mix (7:4:1)\nBursty: on/off bursts with the same average rate\n" +
@@ -265,15 +298,35 @@ sealed class MainForm : Form
             _classView.Columns.Add(name, (int)(w * DeviceDpi / 96f));
         _tips.SetToolTip(_classView, "Per traffic class. With DSCP marking honoured by the network, high-priority classes (EF, AF4x, CS6) should keep low loss and jitter under congestion while best effort / scavenger degrade first.");
 
+        // ⓘ explanations with ideal values on every statistic.
+        foreach (var (tile, key) in new[] { (_tUp, "tile.upload"), (_tDown, "tile.download"), (_tRtt, "tile.rtt"), (_tJitter, "tile.jitter"),
+                     (_tLoss, "tile.loss"), (_tGap, "tile.gap"), (_tRetrans, "tile.retrans"), (_tMos, "tile.mos"), (_tTime, "tile.elapsed"), (_tBloat, "tile.bloat") })
+            tile.SetHelp(key, _tips);
+        _chartTput.SetHelp("chart.throughput", _tips);
+        _chartLat.SetHelp("chart.latency", _tips);
+        _chartLoss.SetHelp("chart.loss", _tips);
+
         var tunnelsTab = new TabPage("VPN tunnels");
         tunnelsTab.Controls.Add(_tunnelView);
+        tunnelsTab.Controls.Add(HelpUi.GroupLink("tunnels", "VPN tunnel columns"));
         var classesTab = new TabPage("Traffic classes");
         classesTab.Controls.Add(_classView);
+        classesTab.Controls.Add(HelpUi.GroupLink("classes", "Traffic class columns"));
         _connView.Columns.Add("Item", (int)(190 * DeviceDpi / 96f));
         _connView.Columns.Add("Value", (int)(720 * DeviceDpi / 96f));
+        _connView.DoubleClick += (_, _) =>
+        {
+            if (_connView.SelectedItems.Count == 0 || _connView.SelectedItems[0].Text != "Device location") return;
+            if ((_session?.Location ?? _lastRecord?.Locations.LastOrDefault()) is { } g) OpenUrl(g.MapUrl);
+        };
         var statsTab = new TabPage("Statistics");
         statsTab.Controls.Add(_statsView);
-        _tips.SetToolTip(_statsView, "Cumulative since the start. Upload columns are measured by the server and sent to the client; download columns are measured here. TCP rows come from the sending side's kernel.");
+        var statsHelp = HelpUi.GroupLink("detail", "Statistics explained", "About these statistics (hover a row for its meaning, double-click for details)");
+        statsTab.Controls.Add(statsHelp);
+        _statsView.DoubleClick += (_, _) =>
+        {
+            if (_statsView.SelectedItems.Count > 0 && StatHelp.Detail(_statsView.SelectedItems[0].Text) is { } info) HelpUi.Show(this, info);
+        };
         var connTab = new TabPage("Connection");
         connTab.Controls.Add(_connView);
         _bottomTabs.TabPages.Add(tunnelsTab);
@@ -299,6 +352,8 @@ sealed class MainForm : Form
         var strip = new StatusStrip();
         strip.Items.Add(_status);
         strip.Items.Add(_reportLink);
+        strip.Items.Add(_compareLink);
+        _compareLink.Click += (_, _) => { if (_lastComparisonPath != null) OpenUrl(_lastComparisonPath); };
         _reportLink.Click += (_, _) =>
         {
             if (_lastRecord != null && HistoryForm.OpenReport(_lastRecord) is { } err)
@@ -398,6 +453,11 @@ sealed class MainForm : Form
         _loss.Value = (decimal)Math.Clamp(_settings.ArtificialLossPct, 0, 100);
         _csv.Checked = _settings.CsvEnabled;
         _ipLookup.Checked = _settings.IpLookup;
+        _shareLocation.Checked = _settings.ShareLocation;
+        _family.SelectedIndex = _settings.Family switch { "4" => 1, "6" => 2, "both" => 3, _ => 0 };
+        _requireTls.Checked = _settings.RequireTls;
+        _capacity.Checked = _settings.CapacityTest;
+        _capacityPct.Value = (decimal)Math.Clamp(_settings.CapacityPct, 10, 100);
         _mtu.Checked = _settings.MeasureMtu;
         _trace.Checked = _settings.AutoTraceroute;
         _baseline.Value = Math.Clamp(c.BaselineSec, 0, 60);
@@ -415,6 +475,11 @@ sealed class MainForm : Form
         _settings.ArtificialLossPct = (double)_loss.Value;
         _settings.CsvEnabled = _csv.Checked;
         _settings.IpLookup = _ipLookup.Checked;
+        _settings.ShareLocation = _shareLocation.Checked;
+        _settings.Family = _family.SelectedIndex switch { 1 => "4", 2 => "6", 3 => "both", _ => "auto" };
+        _settings.RequireTls = _requireTls.Checked;
+        _settings.CapacityTest = _capacity.Checked;
+        _settings.CapacityPct = (double)_capacityPct.Value;
         _settings.MeasureMtu = _mtu.Checked;
         _settings.AutoTraceroute = _trace.Checked;
         _settings.CsvFolder = _csvFolder.Text.Trim();
@@ -468,6 +533,7 @@ sealed class MainForm : Form
         bool bursty = !sim && _profile.SelectedIndex == (int)TrafficProfile.Bursty;
         _burstOn.Enabled = _burstOff.Enabled = bursty;
         _size.Enabled = sim || _profile.SelectedIndex != (int)TrafficProfile.Voip;
+        _capacityPct.Enabled = _capacity.Checked;
     }
 
     void RefreshTunnelList()
@@ -533,7 +599,8 @@ sealed class MainForm : Form
 
     // ------------------------------------------------------------------ run
 
-    async Task StartAsync()
+    /// <param name="familyOverride">Second run of an IPv4-then-IPv6 comparison.</param>
+    async Task StartAsync(System.Net.Sockets.AddressFamily? familyOverride = null)
     {
         if (_session != null) return;
         string host = _host.Text.Trim();
@@ -542,6 +609,28 @@ sealed class MainForm : Form
             MessageBox.Show(this, "Enter the server IP address or FQDN.", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Information);
             _host.Focus();
             return;
+        }
+        System.Net.Sockets.AddressFamily? family = familyOverride;
+        if (familyOverride == null)
+        {
+            _compareStage = 0;
+            _compareFirst = null;
+            switch (_family.SelectedIndex)
+            {
+                case 1: family = System.Net.Sockets.AddressFamily.InterNetwork; break;
+                case 2: family = System.Net.Sockets.AddressFamily.InterNetworkV6; break;
+                case 3:
+                    if (_duration.Value <= 0)
+                    {
+                        MessageBox.Show(this, "Comparing IPv4 and IPv6 runs the test twice, one after the other: set a duration (for example 120 s).",
+                            "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        _duration.Focus();
+                        return;
+                    }
+                    family = System.Net.Sockets.AddressFamily.InterNetwork;
+                    _compareStage = 4;
+                    break;
+            }
         }
         SaveUiToSettings();
         var cfg = ReadConfig();
@@ -555,6 +644,14 @@ sealed class MainForm : Form
         session.TraceCompleted += _ => Ui(() => ShowPath(session));
         session.MeasureMtu = _mtu.Checked;
         session.AutoTraceroute = _trace.Checked;
+        session.Family = family;
+        session.UseTls = true;
+        session.RequireTls = _requireTls.Checked;
+        session.KnownServers = _known;
+        session.CapacityTest = _capacity.Checked;
+        session.CapacityTargetPct = (double)_capacityPct.Value;
+        session.CapacityMeasured += () => Ui(() => _status.Text = $"Connected to {session.ServerEndPoint} - capacity up {Cap(session.CapacityUpMbps, session.CapacityUpAtLimit)} / " +
+                                                                 $"down {Cap(session.CapacityDownMbps, session.CapacityDownAtLimit)}; testing at {session.Config}");
         _session = session;
         UpdateEnabledInputs();
         _start.Enabled = false;
@@ -583,6 +680,20 @@ sealed class MainForm : Form
             _stop.Enabled = false;
             UpdateEnabledInputs();
             _status.Text = "Idle";
+            if (e is ServerCertificateChangedException changed)
+            {
+                if (MessageBox.Show(this, changed.Message + "\n\nTrust the new certificate and connect?", "LinkTest - server certificate changed",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+                {
+                    _known.Trust(changed.Server, changed.Presented);
+                    AppendLog("Trusting the new server certificate " + Tls.ShortFingerprint(changed.Presented));
+                    BeginInvoke(async () => await StartAsync(familyOverride));
+                }
+                else _compareStage = 0;
+                return;
+            }
+            if (_compareStage == 6) AppendLog("IPv4 vs IPv6 comparison not possible: the IPv6 test could not start.");
+            _compareStage = 0;
             if (e is not OperationCanceledException)
                 MessageBox.Show(this, msg, "LinkTest - connection failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -591,6 +702,13 @@ sealed class MainForm : Form
         {
             _connectCts.Dispose();
             _connectCts = null;
+        }
+
+        if (_shareLocation.Checked)
+        {
+            _locationCts = new CancellationTokenSource();
+            var lt = _locationCts.Token;
+            _ = Task.Run(() => WindowsLocation.RunAsync(session, m => Ui(() => AppendLog(m)), lt));
         }
 
         if (_csv.Checked)
@@ -622,6 +740,8 @@ sealed class MainForm : Form
 
     void OnEnded(ClientSession session, string reason)
     {
+        _locationCts?.Cancel();
+        _locationCts = null;
         if (_session != session) return;
         _timer.Stop();
         _csvLog?.Dispose();
@@ -647,6 +767,7 @@ sealed class MainForm : Form
         _stop.Enabled = false;
         UpdateEnabledInputs();
         _status.Text = "Idle - " + reason;
+        ContinueComparison(session.Record, reason);
     }
 
     void OnTick()
@@ -719,7 +840,7 @@ sealed class MainForm : Form
         }
         var rows = d.Rows();
         string[] titles = d.Columns.Select(c => c.Title + (c.Available ? "" : " (server < 1.8)")).ToArray();
-        bool rebuild = _statsView.Columns.Count != titles.Length + 1 || _statsView.Items.Count != rows.Count
+        bool rebuild = _statsView.Columns.Count != titles.Length + 2 || _statsView.Items.Count != rows.Count
             || !titles.Select((t, i) => _statsView.Columns[i + 1].Text == t).All(x => x);
         _statsView.BeginUpdate();
         if (rebuild)
@@ -728,12 +849,17 @@ sealed class MainForm : Form
             _statsView.Groups.Clear();
             _statsView.Columns.Clear();
             _statsView.Columns.Add("Statistic", (int)(250 * DeviceDpi / 96f));
-            foreach (var t in titles) _statsView.Columns.Add(t, (int)(190 * DeviceDpi / 96f), HorizontalAlignment.Right);
+            foreach (var t in titles) _statsView.Columns.Add(t, (int)(170 * DeviceDpi / 96f), HorizontalAlignment.Right);
+            _statsView.Columns.Add("Ideal", (int)(260 * DeviceDpi / 96f));
             foreach (var (section, name, values, hint) in rows)
             {
                 var g = _statsView.Groups.Cast<ListViewGroup>().FirstOrDefault(x => x.Header == section)
                         ?? _statsView.Groups.Add(section, section);
-                var it = new ListViewItem(new[] { name }.Concat(values).ToArray(), g) { ToolTipText = hint };
+                var help = StatHelp.Detail(name);
+                var it = new ListViewItem(new[] { name }.Concat(values).Append(help?.Ideal ?? "").ToArray(), g)
+                {
+                    ToolTipText = help != null ? help.Short : hint,
+                };
                 _statsView.Items.Add(it);
             }
         }
@@ -747,6 +873,44 @@ sealed class MainForm : Form
             }
         }
         _statsView.EndUpdate();
+    }
+
+    static string Cap(double v, bool atLimit) => double.IsFinite(v) ? $"{(atLimit ? "≥" : "")}{v:0.#} Mbps" : "–";
+
+    /// <summary>IPv4-then-IPv6: after the IPv4 test start the IPv6 one; after that, write the comparison report.</summary>
+    void ContinueComparison(TestRecord? rec, string reason)
+    {
+        if (_compareStage == 0) return;
+        if (rec == null || reason == "Stopped by user")
+        {
+            if (_compareStage != 0) AppendLog("IPv4 vs IPv6 comparison cancelled.");
+            _compareStage = 0;
+            return;
+        }
+        if (_compareStage == 4)
+        {
+            _compareFirst = rec;
+            _compareStage = 6;
+            AppendLog("IPv4 test done - starting the IPv6 test…");
+            BeginInvoke(async () => { await Task.Delay(2000); await StartAsync(System.Net.Sockets.AddressFamily.InterNetworkV6); });
+            return;
+        }
+        _compareStage = 0;
+        if (_compareFirst == null) return;
+        try
+        {
+            var cmp = new Comparison(_compareFirst, rec);
+            Directory.CreateDirectory(Results.Folder);
+            string html = Path.Combine(Results.Folder, cmp.SuggestedFileName("html"));
+            File.WriteAllText(html, ReportBuilder.BuildComparison(cmp));
+            File.WriteAllBytes(Path.ChangeExtension(html, "pdf"), PdfReportBuilder.BuildComparison(cmp));
+            _lastComparisonPath = html;
+            _compareLink.Visible = true;
+            AppendLog("IPv4 vs IPv6: " + cmp.Headline);
+            AppendLog($"Comparison saved to {html} (and .pdf) - open it from the status bar.");
+            OpenUrl(html);
+        }
+        catch (Exception e) { AppendLog("Could not write the comparison: " + e.Message); }
     }
 
     void OnTickTunnels()
@@ -791,6 +955,7 @@ sealed class MainForm : Form
             ("Local address (this PC)", c.LocalAddress),
             ("Address seen by server", c.SeenByServer ?? "(server older than 1.4)"),
             ("NAT", c.NatStatus),
+            ("Control connection", c.Security ?? "–"),
         };
         if (c.SeenByServerInfo is IpInfo seen && (c.PublicInfo == null || c.PublicInfo.Ip != seen.Ip))
             rows.Add(("Seen-by-server details", seen.Summary));
@@ -800,9 +965,11 @@ sealed class MainForm : Form
             rows.Add(("Public IP", p.Ip + (p.IsPublic ? "" : $"  ({p.Scope})")));
             rows.Add(("Reverse DNS", p.Hostname ?? "(none)"));
             rows.Add(("ISP / ASN", p.Org ?? "-"));
-            rows.Add(("Location (approx.)", p.Location.Length > 0 ? p.Location : "-"));
+            rows.Add(("IP location (approx.)", p.Location.Length > 0 ? p.Location : "-"));
             rows.Add(("Timezone", p.Timezone ?? "-"));
         }
+        rows.Add(("Device location", c.DeviceLocation is { } g ? $"{g.Text}  {g.Source}  (double-click for a map)"
+            : _shareLocation.Checked ? "waiting for a fix…" : "not reported (turn on \"Report my location\" in the settings)"));
         rows.Add(("Lookup", !_ipLookup.Checked ? "Online lookup disabled (reverse DNS only)"
             : !c.LookupComplete ? "Looking up…"
             : p?.Error != null ? $"{IpLookup.Service}: {p.Error}" : $"via {IpLookup.Service}"));

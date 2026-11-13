@@ -15,6 +15,10 @@ public sealed class LinkEngine
     /// <summary>Artificial loss applied to outgoing packets, in percent (for testing the tool).</summary>
     public double TxDropPct { get; set; }
 
+    /// <summary>Multiplier on every sender's configured rate; changed live (capacity test, "rate" messages).</summary>
+    public double RateScale { get => Volatile.Read(ref _rateScale); set => Volatile.Write(ref _rateScale, double.IsFinite(value) && value > 0 ? value : 1); }
+    double _rateScale = 1;
+
     /// <summary>Supplies retransmission counters of this side's sending TCP sockets.</summary>
     public Func<(long retransBytes, int timeouts)>? TcpInfoProvider { get; set; }
     /// <summary>Supplies full kernel TCP figures for this side's sending sockets (detailed statistics).</summary>
@@ -162,12 +166,15 @@ public sealed class LinkEngine
         rnd.NextBytes(buf);   // filler stays random (defeats WAN compression); header/report overwrite the front
 
         TrafficShaper? shaper = spec.RateBps > 0 ? new TrafficShaper(spec, rnd.Next()) : null;
+        double baseRate = spec.RateBps, appliedScale = 1;
         long seq = 0, lastSent = 0, lastReport = 0;
         shaper?.Start(Clock.NowUs + Math.Max(0, spec.StartDelayUs));
 
         while (!ct.IsCancellationRequested)
         {
             long now = Clock.NowUs;
+            double scale = RateScale;
+            if (scale != appliedScale) { spec.RateBps = baseRate * scale; appliedScale = scale; }
             if (shaper != null)
             {
                 if (now - shaper.NextAtUs > 200_000)

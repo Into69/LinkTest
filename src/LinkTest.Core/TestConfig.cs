@@ -102,6 +102,8 @@ public static class Json
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter() },
+        // "NaN" (not measured) must not make a control message unsendable, e.g. a location fix without altitude.
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
     public static readonly JsonSerializerOptions Pretty = new(Options) { WriteIndented = true };

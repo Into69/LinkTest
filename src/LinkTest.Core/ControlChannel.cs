@@ -7,7 +7,8 @@ namespace LinkTest.Core;
 /// <summary>Message on the TCP control connection (newline-delimited JSON).</summary>
 /// <remarks>
 /// Types: hello (C→S), welcome / error (S→C), start, stop (C→S), final (S→C, carries the server's
-/// receive report), stats (S→C, detailed statistics once a second, 1.8+), tprobe (C→S) / tprobe_r (S→C) for TCP-based tunnel simulations, info (either way).
+/// receive report), stats (S→C, detailed statistics once a second, 1.8+), location (C→S, 1.9+, opt-in),
+/// seen (S→C, 1.9+: the client's traffic now arrives from a different address), tprobe (C→S) / tprobe_r (S→C) for TCP-based tunnel simulations, info (either way).
 /// </remarks>
 public sealed class ControlMessage
 {
@@ -34,6 +35,10 @@ public sealed class ControlMessage
     public List<StatsReport>? ClassReports { get; set; }
     /// <summary>"stats" (S→C, once a second) and "final": the server's detailed per-class statistics (1.8+).</summary>
     public List<ClassDetail>? Details { get; set; }
+    /// <summary>"location" (C→S, 1.9+): the client device's position, only when the user turned location reporting on.</summary>
+    public GeoFix? Location { get; set; }
+    /// <summary>"rate" (C→S, 1.9+): new upload / download rates in <see cref="Config"/> (capacity test). Welcome: the server's per-direction cap.</summary>
+    public double MaxMbps { get; set; }
 }
 
 public sealed class ControlChannel : IDisposable
@@ -43,16 +48,20 @@ public sealed class ControlChannel : IDisposable
     readonly StreamWriter _writer;
     readonly object _writeLock = new();
 
-    public ControlChannel(Socket socket)
+    /// <param name="stream">The stream to use instead of the plain socket (e.g. TLS over it); owns the socket.</param>
+    public ControlChannel(Socket socket, Stream? stream = null)
     {
         _socket = socket;
-        var ns = new NetworkStream(socket, ownsSocket: true);
+        Stream ns = stream ?? new NetworkStream(socket, ownsSocket: true);
+        Security = stream is System.Net.Security.SslStream ssl ? Tls.Describe(ssl) : null;
         var utf8 = new UTF8Encoding(false);
         _reader = new StreamReader(ns, utf8, false, 8192);
         _writer = new StreamWriter(ns, utf8, 8192) { AutoFlush = true, NewLine = "\n" };
     }
 
     public Socket Socket => _socket;
+    /// <summary>"TLS 1.3" etc. when encrypted, null when plain.</summary>
+    public string? Security { get; }
 
     public void Send(ControlMessage m)
     {

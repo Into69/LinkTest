@@ -28,10 +28,10 @@ sealed class DetailsPage : ContentPage
                 Padding = new Thickness(10, 0, 10, 20),
                 Children =
                 {
-                    Ui.Header("VPN tunnels"), _tunnels,
-                    Ui.Header("Traffic classes"), _classes,
-                    Ui.Header("Statistics"),
-                    Ui.Hint("Upload is measured by the server, download by this phone; TCP rows come from the sender's kernel. Scroll sideways for all columns."),
+                    Ui.HelpHeader("VPN tunnels", "tunnels", "VPN tunnel figures"), _tunnels,
+                    Ui.HelpHeader("Traffic classes", "classes", "Traffic class figures"), _classes,
+                    Ui.HelpHeader("Statistics", "detail", "Statistics explained"),
+                    Ui.Hint("Upload is measured by the server, download by this phone; TCP rows come from the sender's kernel. Scroll sideways for all columns. Tap a statistic (ⓘ) for what it means and its ideal value."),
                     Ui.Card(new VerticalStackLayout { Children = { _statsHint, new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _stats } } }),
                     Ui.Header("Connection"), Ui.Card(_conn),
                     Ui.Header("Path MTU"), Ui.Card(_mtu),
@@ -95,7 +95,13 @@ sealed class DetailsPage : ContentPage
                 }
                 _stats.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
                 r++;
-                _stats.Add(new Label { Text = rows[i].name, FontSize = 11, TextColor = Ui.Muted }, 0, r);
+                var nameLabel = new Label { Text = rows[i].name, FontSize = 11, TextColor = Ui.Muted };
+                if (StatHelp.Detail(rows[i].name) is { } help)
+                {
+                    nameLabel.Text += " " + Ui.InfoGlyph;
+                    Ui.OnTap(nameLabel, () => Ui.ShowHelp(help.Title, help.ToText()));
+                }
+                _stats.Add(nameLabel, 0, r);
                 for (int c = 0; c < d.Columns.Count; c++)
                 {
                     var cell = new Label { FontSize = 11, HorizontalTextAlignment = TextAlignment.End };
@@ -176,15 +182,28 @@ sealed class DetailsPage : ContentPage
         Row("This device", c.LocalAddress);
         Row("Seen by server", c.SeenByServer ?? "(server older than 1.4)");
         Row("NAT", c.NatStatus);
+        Row("Control connection", c.Security ?? "–");
         if (c.SeenByServerInfo is IpInfo seen && (c.PublicInfo == null || c.PublicInfo.Ip != seen.Ip)) Row("Seen-by-server details", seen.Summary);
         if (c.PublicInfo is IpInfo p)
         {
             Row("Public IP", p.Ip + (p.IsPublic ? "" : $" ({p.Scope})"));
             Row("Reverse DNS", p.Hostname ?? "(none)");
             Row("ISP / ASN", p.Org ?? "-");
-            Row("Location (approx.)", p.Location.Length > 0 ? p.Location : "-");
+            Row("IP location (approx.)", p.Location.Length > 0 ? p.Location : "-");
             Row("Timezone", p.Timezone ?? "-");
         }
+        if (c.DeviceLocation is { } g)
+        {
+            var loc = new Label
+            {
+                FormattedText = new FormattedString { Spans = {
+                    new Span { Text = "Device location: ", TextColor = Ui.Muted, FontSize = 13 },
+                    new Span { Text = g.Text + " (tap for a map)", FontSize = 13, TextColor = Ui.Accent } } },
+            };
+            Ui.OnTap(loc, () => _ = Launcher.Default.OpenAsync(g.MapUrl));
+            _conn.Add(loc);
+        }
+        else Row("Device location", _app.Settings.ShareLocation ? "waiting for a fix…" : "not reported (Settings > Diagnostics)");
         Row("Lookup", !_app.Settings.IpLookup ? "online lookup disabled" : !c.LookupComplete ? "looking up…"
             : c.PublicInfo?.Error != null ? $"{IpLookup.Service}: {c.PublicInfo.Error}" : $"via {IpLookup.Service}");
     }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using LinkTest.Core;
 
 namespace LinkTest.Mobile;
 
@@ -29,6 +30,42 @@ static class Ui
 
     public static Label Hint(string text) => new() { Text = text, FontSize = 12, TextColor = Muted };
 
+    public const string InfoGlyph = "ⓘ";
+
+    /// <summary>Shows what a statistic means and its ideal values.</summary>
+    public static void ShowHelp(string key)
+    {
+        if (StatHelp.Get(key) is { } i) ShowHelp(i.Title, i.ToText());
+    }
+
+    public static async void ShowHelp(string title, string text)
+    {
+        try
+        {
+            var page = Application.Current?.Windows.FirstOrDefault()?.Page;
+            if (page != null) await page.DisplayAlertAsync(title, text, "OK");
+        }
+        catch { }
+    }
+
+    public static void OnTap(View v, Action a)
+    {
+        var tap = new TapGestureRecognizer();
+        tap.Tapped += (_, _) => a();
+        v.GestureRecognizers.Add(tap);
+    }
+
+    /// <summary>Section header with an ⓘ that explains every statistic of the section.</summary>
+    public static View HelpHeader(string text, string group, string helpTitle)
+    {
+        var info = new Label { Text = InfoGlyph, FontSize = 20, TextColor = Accent, VerticalOptions = LayoutOptions.End, Padding = new Thickness(8, 0, 8, 2) };
+        OnTap(info, () => ShowHelp(helpTitle, StatHelp.GroupText(group)));
+        var h = Header(text);
+        var row = new HorizontalStackLayout { Children = { h, info } };
+        OnTap(h, () => ShowHelp(helpTitle, StatHelp.GroupText(group)));
+        return row;
+    }
+
     public static Border Card(View content) => new()
     {
         Content = content, BackgroundColor = Colors.White, Stroke = Color.FromArgb("#DDDDDD"), StrokeThickness = 1,
@@ -43,8 +80,14 @@ sealed class Tile : Border
     readonly Label _value = new() { Text = "–", FontSize = 22, FontAttributes = FontAttributes.Bold, TextColor = Colors.Black };
     readonly Label _sub = new() { FontSize = 11, TextColor = Ui.Muted, LineBreakMode = LineBreakMode.TailTruncation };
 
-    public Tile(string title)
+    /// <param name="helpKey">StatHelp key: the title gets an ⓘ and tapping the tile explains the statistic.</param>
+    public Tile(string title, string? helpKey = null)
     {
+        if (helpKey != null)
+        {
+            title += " " + Ui.InfoGlyph;
+            Ui.OnTap(this, () => Ui.ShowHelp(helpKey));
+        }
         BackgroundColor = Colors.White;
         Stroke = Color.FromArgb("#DDDDDD");
         StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 6 };
@@ -70,6 +113,8 @@ sealed class ChartDrawable : IDrawable
     readonly List<(string name, Color color, List<double> data)> _series = new();
 
     public string Title { get; init; } = "";
+    /// <summary>Draws an ⓘ after the title (the view handles the tap).</summary>
+    public bool ShowInfo { get; init; }
     public string Unit { get; init; } = "";
     public int Capacity { get; init; } = 180;
     public double MinYMax { get; init; } = 1;
@@ -103,7 +148,7 @@ sealed class ChartDrawable : IDrawable
         canvas.FontSize = 12;
         canvas.FontColor = Colors.Black;
         canvas.Font = Microsoft.Maui.Graphics.Font.DefaultBold;
-        canvas.DrawString(Title + (Unit.Length > 0 ? $" ({Unit})" : ""), r.X + 4, r.Y + 1, r.Width - 8, 16, HorizontalAlignment.Left, VerticalAlignment.Top);
+        canvas.DrawString(Title + (Unit.Length > 0 ? $" ({Unit})" : "") + (ShowInfo ? " " + Ui.InfoGlyph : ""), r.X + 4, r.Y + 1, r.Width - 8, 16, HorizontalAlignment.Left, VerticalAlignment.Top);
         canvas.Font = Microsoft.Maui.Graphics.Font.Default;
 
         // Legend (latest values) on the second line.

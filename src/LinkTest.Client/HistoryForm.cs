@@ -35,6 +35,7 @@ sealed class HistoryForm : Form
         buttons.Controls.Add(Btn("Save report as…", SaveReport));
         buttons.Controls.Add(Btn("Save PDF report…", () => { if (Selected is { } s) Try("load the result", () => SavePdf(this, s.Load(), _store.Folder)); }));
         buttons.Controls.Add(Btn("Export CSV…", ExportCsv));
+        buttons.Controls.Add(Btn("Compare 2 selected…", Compare));
         buttons.Controls.Add(Btn("Open results folder", () => Open(_store.Folder)));
         buttons.Controls.Add(Btn("Delete", Delete));
         buttons.Controls.Add(_info);
@@ -138,6 +139,34 @@ sealed class HistoryForm : Form
         try { UseWaitCursor = true; a(); }
         catch (Exception e) { MessageBox.Show(this, $"Could not {what}:\n{e.Message}", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         finally { UseWaitCursor = false; }
+    }
+
+    /// <summary>Side-by-side report of two selected tests (HTML or PDF).</summary>
+    void Compare()
+    {
+        var sel = _list.SelectedIndices.Cast<int>().Select(i => _items[i]).ToList();
+        if (sel.Count != 2)
+        {
+            MessageBox.Show(this, "Select exactly two tests (Ctrl+click) to compare them.", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        Try("compare the tests", () =>
+        {
+            var older = sel.OrderBy(x => x.Summary.StartedAt).ToList();
+            var a = older[0].Load(); var b = older[1].Load();
+            string la = a.Family != null && b.Family != null && a.Family != b.Family ? a.Family : $"{a.StartedAt:MM-dd HH:mm}";
+            string lb = a.Family != null && b.Family != null && a.Family != b.Family ? b.Family : $"{b.StartedAt:MM-dd HH:mm}";
+            var cmp = new Comparison(a, b, la, lb);
+            using var d = new SaveFileDialog
+            {
+                FileName = cmp.SuggestedFileName("html").Replace(":", ""), Filter = "HTML report (*.html)|*.html|PDF report (*.pdf)|*.pdf", Title = "Save comparison",
+                InitialDirectory = _store.Folder,
+            };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            if (d.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) File.WriteAllBytes(d.FileName, PdfReportBuilder.BuildComparison(cmp));
+            else File.WriteAllText(d.FileName, ReportBuilder.BuildComparison(cmp));
+            Open(d.FileName);
+        });
     }
 
     void Delete()

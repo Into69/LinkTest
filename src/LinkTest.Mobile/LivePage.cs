@@ -7,12 +7,14 @@ sealed class LivePage : ContentPage
 {
     readonly AppController _app = AppController.Instance;
     readonly Label _status = new() { FontSize = 12, TextColor = Ui.Muted };
-    readonly Tile _up = new("Upload (client→server)"), _down = new("Download (server→client)"), _rtt = new("Round-trip time"),
-        _jitter = new("Jitter ↑ / ↓ (ms)"), _loss = new("Loss ↑ / ↓ (%)"), _gap = new("Longest gap ↑ / ↓"),
-        _retrans = new("TCP retransmits ↑ / ↓"), _mos = new("VoIP MOS (est.)"), _bloat = new("Bufferbloat"), _time = new("Elapsed");
-    readonly ChartDrawable _tput = new() { Title = "Throughput", Unit = "Mbps" };
-    readonly ChartDrawable _lat = new() { Title = "Latency", Unit = "ms" };
-    readonly ChartDrawable _lossChart = new() { Title = "Packet loss", Unit = "%" };
+    // Tap any tile or chart for what it means and its ideal values.
+    readonly Tile _up = new("Upload (to server)", "tile.upload"), _down = new("Download (from server)", "tile.download"),
+        _rtt = new("Round-trip time", "tile.rtt"), _jitter = new("Jitter ↑ / ↓ (ms)", "tile.jitter"), _loss = new("Loss ↑ / ↓ (%)", "tile.loss"),
+        _gap = new("Longest gap ↑ / ↓", "tile.gap"), _retrans = new("TCP retransmits ↑ / ↓", "tile.retrans"), _mos = new("VoIP MOS (est.)", "tile.mos"),
+        _bloat = new("Bufferbloat", "tile.bloat"), _time = new("Elapsed", "tile.elapsed");
+    readonly ChartDrawable _tput = new() { Title = "Throughput", Unit = "Mbps", ShowInfo = true };
+    readonly ChartDrawable _lat = new() { Title = "Latency", Unit = "ms", ShowInfo = true };
+    readonly ChartDrawable _lossChart = new() { Title = "Packet loss", Unit = "%", ShowInfo = true };
     readonly GraphicsView _tputView, _latView, _lossView;
     readonly Slider _lossSlider = new() { Minimum = 0, Maximum = 50, MinimumTrackColor = Ui.Accent };
     readonly Label _lossValue = new() { FontSize = 13, VerticalOptions = LayoutOptions.Center, WidthRequest = 52 };
@@ -33,6 +35,9 @@ sealed class LivePage : ContentPage
         _tputView = new GraphicsView { Drawable = _tput, HeightRequest = 170 };
         _latView = new GraphicsView { Drawable = _lat, HeightRequest = 170 };
         _lossView = new GraphicsView { Drawable = _lossChart, HeightRequest = 150 };
+        Ui.OnTap(_tputView, () => Ui.ShowHelp("chart.throughput"));
+        Ui.OnTap(_latView, () => Ui.ShowHelp("chart.latency"));
+        Ui.OnTap(_lossView, () => Ui.ShowHelp("chart.loss"));
 
         var tiles = new Grid { ColumnDefinitions = { new(GridLength.Star), new(GridLength.Star) }, ColumnSpacing = 6, RowSpacing = 6 };
         Tile[] all = { _up, _down, _rtt, _jitter, _loss, _gap, _retrans, _mos, _bloat, _time };

@@ -133,6 +133,24 @@ public static class IpLookup
         }
     }
 
+    /// <summary>This device's current public IP address only (a small request; no details). Null on failure.</summary>
+    public static async Task<IPAddress?> PublicAddressAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"https://{Service}/ip");
+            req.Headers.Accept.Clear();
+            req.Headers.Accept.ParseAdd("text/plain");
+            using var resp = await Http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            return IPAddress.TryParse((await resp.Content.ReadAsStringAsync(ct)).Trim(), out var a) ? a : null;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return null; }
+    }
+
+    /// <summary>Forgets the cached details of an address (e.g. after it changed hands).</summary>
+    public static void Forget(string ip) => Cache.TryRemove(ip, out _);
+
     public static async Task<string?> ReverseDnsAsync(IPAddress ip, CancellationToken ct)
     {
         try
@@ -154,4 +172,6 @@ public sealed record ConnectionInfo(
     string NatStatus,
     IpInfo? SeenByServerInfo,
     IpInfo? PublicInfo,
-    bool LookupComplete);
+    bool LookupComplete,
+    GeoFix? DeviceLocation = null,
+    string? Security = null);

@@ -24,6 +24,50 @@ public static class ReportBuilder
         return path;
     }
 
+    /// <summary>Side-by-side HTML report of two tests (e.g. IPv4 vs IPv6), same style as the single-test report.</summary>
+    public static string BuildComparison(Comparison c)
+    {
+        var a = c.RecA; var b = c.RecB;
+        string single = Build(a);
+        var sb = new StringBuilder(single[..(single.IndexOf("<main>", StringComparison.Ordinal) + 6)]);
+        sb.Replace(E($"LinkTest report {a.StartedAt.ToString("yyyy-MM-dd HH:mm", Inv)}"), E($"LinkTest {c.LabelA} vs {c.LabelB}"));
+        sb.Append($"<h1>{E(c.LabelA)} vs {E(c.LabelB)}</h1><div class=\"sub\">{E(a.Server.Split(' ')[0])} · {E(a.Mode)} · " +
+                  $"{E(c.LabelA)} {a.StartedAt.ToString("yyyy-MM-dd HH:mm", Inv)} ({Clock.FormatDuration(a.DurationSec)}), " +
+                  $"{E(c.LabelB)} {b.StartedAt.ToString("HH:mm", Inv)} ({Clock.FormatDuration(b.DurationSec)})</div>");
+        sb.Append($"<div class=\"panel\" style=\"margin-top:16px\"><b>{E(c.Headline)}</b>" +
+                  "<div class=\"sub\" style=\"margin-top:4px\">The tests ran one after the other with the same settings; conditions on the link can change in between.</div></div>");
+        sb.Append($"<h2>Results</h2><div class=\"panel\"><table><tr><th></th><th class=n>{E(c.LabelA)}</th><th class=n>{E(c.LabelB)}</th><th class=n>{E(c.LabelB)} − {E(c.LabelA)}</th></tr>");
+        foreach (var l in c.Lines)
+        {
+            string ca = l.Better < 0 ? " class=\"n good\"" : " class=n", cb = l.Better > 0 ? " class=\"n good\"" : " class=n";
+            sb.Append($"<tr><td>{E(l.Name)}</td><td{ca}>{E(l.A)}</td><td{cb}>{E(l.B)}</td><td class=n>{E(l.Diff)}</td></tr>");
+        }
+        sb.Append("</table><div class=\"sub\" style=\"margin-top:6px\">Green = clearly better (small differences are treated as alike).</div></div>");
+
+        int n = Math.Min(a.Samples.T.Count, b.Samples.T.Count);
+        if (n > 1)
+        {
+            var t = a.Samples.T.Take(n).ToList();
+            List<double> Cut(List<double> v) => v.Take(n).ToList();
+            sb.Append("<h2>Download throughput</h2><div class=\"panel\">");
+            Chart(sb, t, "Mbps", Series(c.LabelA, "--s1", Cut(a.Samples.Down), false), Series(c.LabelB, "--s3", Cut(b.Samples.Down), false));
+            sb.Append("</div><h2>Upload throughput</h2><div class=\"panel\">");
+            Chart(sb, t, "Mbps", Series(c.LabelA, "--s1", Cut(a.Samples.Up), false), Series(c.LabelB, "--s3", Cut(b.Samples.Up), false));
+            sb.Append("</div><h2>Round-trip time</h2><div class=\"panel\">");
+            Chart(sb, t, "ms", Series(c.LabelA, "--s1", Cut(a.Samples.Rtt), false), Series(c.LabelB, "--s3", Cut(b.Samples.Rtt), false));
+            sb.Append("</div><h2>Packet loss (worst direction)</h2><div class=\"panel\">");
+            List<double> Worst(SampleSeries s) => Enumerable.Range(0, n).Select(i => Math.Max(Z(s.LossUp[i]), Z(s.LossDown[i]))).ToList();
+            Chart(sb, t, "%", Series(c.LabelA, "--s1", Worst(a.Samples), true), Series(c.LabelB, "--s3", Worst(b.Samples), true));
+            sb.Append("</div>");
+        }
+        sb.Append("<h2>Addresses</h2><div class=\"panel\"><table>");
+        Row(sb, c.LabelA, a.Server + (a.Connection?.PublicInfo is { } pa ? " · public " + pa.Ip : ""));
+        Row(sb, c.LabelB, b.Server + (b.Connection?.PublicInfo is { } pb ? " · public " + pb.Ip : ""));
+        sb.Append("</table></div>");
+        sb.Append($"<footer>LinkTest {E(a.AppVersion)} · full single-test reports are in the History window.</footer></main></body></html>");
+        return sb.ToString();
+    }
+
     public static string Build(TestRecord r)
     {
         var sb = new StringBuilder();
@@ -56,7 +100,7 @@ public static class ReportBuilder
         sb.Replace("@@TITLE@@", E($"LinkTest report {r.StartedAt.ToString("yyyy-MM-dd HH:mm", Inv)}"));
 
         sb.Append($"<h1>Link quality report</h1><div class=\"sub\">{E(r.StartedAt.ToString("dddd d MMMM yyyy, HH:mm:ss", Inv))} – {E(r.EndedAt.ToString("HH:mm:ss", Inv))}" +
-                  $" · {Clock.FormatDuration(r.DurationSec)} · server {E(r.Server)} · {E(r.Mode)}</div>");
+                  $" · {Clock.FormatDuration(r.DurationSec)} · server {E(r.Server)} · {E(r.Mode)}{(r.Family != null ? " · " + E(r.Family) : "")}</div>");
 
         // Key figures
         sb.Append("<div class=\"cards\">");
@@ -70,6 +114,9 @@ public static class ReportBuilder
             Card(sb, "Bufferbloat", r.BloatGrade, $"+{N(Math.Max(0, r.LoadedRttMs - r.IdleRttMs), "0.0")} ms under load",
                 r.BloatGrade is "A+" or "A" ? "good" : r.BloatGrade is "B" or "C" ? "warn" : "bad");
         Card(sb, "VoIP MOS (avg)", N(r.MosAvg, "0.0"), "estimate, 1–4.5", r.MosAvg >= 4 ? "good" : r.MosAvg >= 3.6 ? "warn" : double.IsFinite(r.MosAvg) ? "bad" : null);
+        if (double.IsFinite(r.CapacityUpMbps) || double.IsFinite(r.CapacityDownMbps))
+            Card(sb, "Capacity ↑ / ↓", $"{N(r.CapacityUpMbps, "0.#")} / {N(r.CapacityDownMbps, "0.#")} Mbps",
+                (r.CapacityUpAtLimit || r.CapacityDownAtLimit ? "≥ = didn't saturate; " : "") + $"tested at {N(r.Config.UpMbps, "0.#")} / {N(r.Config.DownMbps, "0.#")}");
         if (r.Mtu is { Ok: true } m) Card(sb, "Path MTU", $"{m.PathMtu} B", $"up {m.UpPathMtu} / down {m.DownPathMtu}", m.PathMtu < 1500 && !m.Ipv6 ? "warn" : null);
         if (r.Tunnels.Count > 0)
         {
@@ -92,9 +139,40 @@ public static class ReportBuilder
             sb.Append("</div>");
         }
 
+        // Route (location reporting on and the device moved)
+        if (RouteMap.Build(r, 960, 520) is { } route)
+        {
+            sb.Append("<h2>Route</h2><div class=\"panel\">");
+            sb.Append("<div class=\"legend\"><span><i style=\"background:var(--good)\"></i>good</span><span><i style=\"background:var(--warn)\"></i>fair</span>" +
+                      "<span><i style=\"background:var(--bad)\"></i>poor</span><span><i style=\"background:var(--muted)\"></i>no data</span>" +
+                      $"<span>{E(route.Summary)}</span></div>");
+            sb.Append($"<svg viewBox=\"0 0 {route.Width:0} {route.Height:0}\" role=\"img\" aria-label=\"Route of the test\">");
+            sb.Append($"<rect x=\"0\" y=\"0\" width=\"{route.Width:0}\" height=\"{route.Height:0}\" fill=\"var(--bg)\" rx=\"6\"/>");
+            foreach (var run in route.Runs)
+            {
+                string col = run.Level switch { StatLevel.Good => "var(--good)", StatLevel.Fair => "var(--warn)", StatLevel.Poor => "var(--bad)", _ => "var(--muted)" };
+                sb.Append($"<polyline fill=\"none\" stroke=\"{col}\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\"" +
+                          string.Join(" ", run.Points.Select(p => $"{p.x.ToString("0.#", Inv)},{p.y.ToString("0.#", Inv)}")) + "\"/>");
+            }
+            foreach (var (pt, label) in new[] { (route.Start, "Start"), (route.End, "End") })
+                sb.Append($"<circle cx=\"{pt.x.ToString("0.#", Inv)}\" cy=\"{pt.y.ToString("0.#", Inv)}\" r=\"7\" fill=\"var(--card)\" stroke=\"var(--text)\" stroke-width=\"2\"/>" +
+                          $"<text x=\"{(pt.x + 11).ToString("0.#", Inv)}\" y=\"{(pt.y + 4).ToString("0.#", Inv)}\" style=\"fill:var(--text);font-weight:600\">{label}</text>");
+            double sy = route.Height - 14;
+            sb.Append($"<line x1=\"16\" x2=\"{(16 + route.ScaleLength).ToString("0.#", Inv)}\" y1=\"{sy}\" y2=\"{sy}\" stroke=\"var(--text)\" stroke-width=\"2\"/>" +
+                      $"<text x=\"16\" y=\"{sy - 6}\">{E(route.ScaleText)}</text><text x=\"{route.Width - 16:0}\" y=\"24\" text-anchor=\"end\">N ↑</text>");
+            sb.Append("</svg>");
+            if (r.Locations.FirstOrDefault(f => f.IsValid) is { } first)
+                sb.Append($"<p class=\"sub\">Drawn from the recorded positions (no map tiles). Start on a map: <a href=\"{E(first.MapUrl)}\">OpenStreetMap</a>.</p>");
+            sb.Append("</div>");
+        }
+
         // Settings and connection
         sb.Append("<h2>Test settings</h2><div class=\"panel\"><table>");
         Row(sb, "Mode", r.Mode);
+        if (r.Family != null) Row(sb, "Address family", r.Family);
+        if (double.IsFinite(r.CapacityUpMbps) || double.IsFinite(r.CapacityDownMbps))
+            Row(sb, "Capacity test", $"found up {CapText(r.CapacityUpMbps, r.CapacityUpAtLimit)}, down {CapText(r.CapacityDownMbps, r.CapacityDownAtLimit)}; " +
+                                     $"tested at {N(r.Config.UpMbps)} / {N(r.Config.DownMbps)} Mbps after a {N(r.WarmupSec, "0")} s ramp-up (left out of the judgement)");
         Row(sb, "Configured rates", $"up {N(r.Config.UpMbps)} Mbps, down {N(r.Config.DownMbps)} Mbps");
         if (!r.Config.DscpSimulate) Row(sb, "Traffic profile", $"{r.Config.Profile}, {r.Config.PacketSize} B packets" + (r.Config.Protocol != TransportKind.Udp ? $", {r.Config.Streams} TCP stream(s)" : ""));
         Row(sb, "DSCP", r.Config.DscpSimulate ? "Simulate (per-class marking)" : r.Config.Dscp > 0 ? DscpNames.Name(r.Config.Dscp) : "none");
@@ -110,11 +188,20 @@ public static class ReportBuilder
             Row(sb, "Client address", c.LocalAddress);
             Row(sb, "Seen by server", c.SeenByServer ?? "–");
             Row(sb, "NAT", c.NatStatus);
+            if (c.Security != null) Row(sb, "Control connection", c.Security);
             if (c.PublicInfo is { } p)
             {
                 Row(sb, "Public IP", p.Ip + (p.Hostname != null ? $" ({p.Hostname})" : ""));
                 Row(sb, "ISP / ASN", p.Org ?? "–");
-                Row(sb, "Location (approx.)", p.Location.Length > 0 ? p.Location : "–");
+                Row(sb, "IP location (approx.)", p.Location.Length > 0 ? p.Location : "–");
+            }
+            foreach (var ch in r.IpChanges)
+                Row(sb, $"Public IP changed {ch.At:HH:mm:ss}", $"{ch.From} → {ch.To}: {ch.Details}");
+            if (r.Locations.FirstOrDefault(f => f.IsValid) is { } first)
+            {
+                sb.Append($"<tr><th>Device location</th><td style=\"white-space:normal\">{E(GeoFix.Describe(r.Locations))} " +
+                          $"(<a href=\"{E(first.MapUrl)}\">map</a>; {r.Locations.Count} fix{(r.Locations.Count == 1 ? "" : "es")}" +
+                          $"{(first.Source.Length > 0 ? ", " + E(first.Source) : "")})</td></tr>");
             }
             sb.Append("</table></div>");
         }
@@ -202,6 +289,8 @@ public static class ReportBuilder
 
     static void Card(StringBuilder sb, string k, string v, string d, string? cls = null) =>
         sb.Append($"<div class=\"card\"><div class=\"k\">{E(k)}</div><div class=\"v{(cls != null ? " " + cls : "")}\">{E(v)}</div><div class=\"d\">{E(d)}</div></div>");
+
+    static string CapText(double v, bool atLimit) => double.IsFinite(v) ? $"{(atLimit ? "at least " : "")}{N(v, "0.##")} Mbps" : "not tested";
 
     static void Row(StringBuilder sb, string k, string v) => sb.Append($"<tr><th>{E(k)}</th><td style=\"white-space:normal\">{E(v)}</td></tr>");
 

@@ -14,6 +14,8 @@ public static class Protocol
 
     /// <summary>First byte written on every TCP connection so the server knows what it is.</summary>
     public const byte ConnControl = (byte)'C';
+    /// <summary>Control connection wrapped in TLS (1.9+).</summary>
+    public const byte ConnControlTls = (byte)'T';
     public const byte ConnStream = (byte)'S';
 
     /// <summary>How often each sender embeds a stats report in its packets.</summary>

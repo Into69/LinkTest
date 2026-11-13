@@ -18,7 +18,7 @@ public sealed class TestService : Service
     const string ChannelId = "linktest_running";
 
     PowerManager.WakeLock? _wake;
-    WifiManager.WifiLock? _wifi;
+    WifiManager.WifiLock? _wifi, _wifiLowLatency;
 
     public override IBinder? OnBind(Intent? intent) => null;
 
@@ -26,22 +26,39 @@ public sealed class TestService : Service
     {
         EnsureChannel(this);
         var n = BuildNotification(this, intent?.GetStringExtra("text") ?? "Test running");
+        // With location reporting on, the service is also a "location" service so fixes keep coming with the screen off.
+        bool location = intent?.GetBooleanExtra("location", false) == true;
         if (OperatingSystem.IsAndroidVersionAtLeast(34))
-            StartForeground(NotificationId, n, Android.Content.PM.ForegroundService.TypeSpecialUse);
+            StartForeground(NotificationId, n, location
+                ? Android.Content.PM.ForegroundService.TypeSpecialUse | Android.Content.PM.ForegroundService.TypeLocation
+                : Android.Content.PM.ForegroundService.TypeSpecialUse);
+        else if (OperatingSystem.IsAndroidVersionAtLeast(29) && location)
+            StartForeground(NotificationId, n, Android.Content.PM.ForegroundService.TypeLocation);
         else
             StartForeground(NotificationId, n);
 
         if (_wake == null && GetSystemService(PowerService) is PowerManager pm)
         {
             _wake = pm.NewWakeLock(WakeLockFlags.Partial, "LinkTest::Test");
+            _wake?.SetReferenceCounted(false);
             _wake?.Acquire();
         }
         if (_wifi == null && GetSystemService(WifiService) is WifiManager wm)
         {
-#pragma warning disable CA1422 // high-performance Wi-Fi lock is deprecated on new Android, still honoured on older devices
-            _wifi = wm.CreateWifiLock(OperatingSystem.IsAndroidVersionAtLeast(29) ? Android.Net.WifiMode.FullLowLatency : Android.Net.WifiMode.FullHighPerf, "LinkTest::Wifi");
+            // HIGH_PERF keeps Wi-Fi out of power save with the screen off and the app in the background (Android 13
+            // and older; Android 14+ maps it to LOW_LATENCY). LOW_LATENCY only applies while the screen is on and the
+            // app is in front; holding both gives the best available mode in every state.
+#pragma warning disable CA1422
+            _wifi = wm.CreateWifiLock(Android.Net.WifiMode.FullHighPerf, "LinkTest::Wifi");
 #pragma warning restore CA1422
+            _wifi?.SetReferenceCounted(false);
             _wifi?.Acquire();
+            if (OperatingSystem.IsAndroidVersionAtLeast(29))
+            {
+                _wifiLowLatency = wm.CreateWifiLock(Android.Net.WifiMode.FullLowLatency, "LinkTest::WifiLowLatency");
+                _wifiLowLatency?.SetReferenceCounted(false);
+                _wifiLowLatency?.Acquire();
+            }
         }
         return StartCommandResult.NotSticky;
     }
@@ -50,6 +67,7 @@ public sealed class TestService : Service
     {
         try { if (_wake?.IsHeld == true) _wake.Release(); } catch { }
         try { if (_wifi?.IsHeld == true) _wifi.Release(); } catch { }
+        try { if (_wifiLowLatency?.IsHeld == true) _wifiLowLatency.Release(); } catch { }
         base.OnDestroy();
     }
 
@@ -82,14 +100,52 @@ public sealed class TestService : Service
         return b.Build()!;
     }
 
+    /// <summary>Swiping the app away from Recents must not end a running test: the service (and process) stay.</summary>
+    public override void OnTaskRemoved(Intent? rootIntent) { }
+
+    /// <summary>Battery-optimisation (Doze / app standby) exemption, so the system doesn't restrict a running test.</summary>
+    public static class Battery
+    {
+        public static bool IsExempt
+        {
+            get
+            {
+                if (!OperatingSystem.IsAndroidVersionAtLeast(23)) return true;
+                var ctx = Android.App.Application.Context;
+                return ctx.GetSystemService(PowerService) is PowerManager pm && pm.IsIgnoringBatteryOptimizations(ctx.PackageName);
+            }
+        }
+
+        /// <summary>Opens the system prompt asking to let LinkTest ignore battery optimisation.</summary>
+        public static void RequestExemption()
+        {
+            if (!OperatingSystem.IsAndroidVersionAtLeast(23)) return;
+            var ctx = Android.App.Application.Context;
+            try
+            {
+                var i = new Intent(Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations, Android.Net.Uri.Parse("package:" + ctx.PackageName));
+                i.AddFlags(ActivityFlags.NewTask);
+                ctx.StartActivity(i);
+            }
+            catch
+            {
+                // Some devices hide the direct prompt: open the battery-optimisation list instead.
+                var i = new Intent(Android.Provider.Settings.ActionIgnoreBatteryOptimizationSettings);
+                i.AddFlags(ActivityFlags.NewTask);
+                ctx.StartActivity(i);
+            }
+        }
+    }
+
     /// <summary>Static helpers used by the app.</summary>
     public static class Control
     {
-        public static void Start(string text)
+        public static void Start(string text, bool withLocation = false)
         {
             var ctx = Android.App.Application.Context;
             var i = new Intent(ctx, typeof(TestService));
             i.PutExtra("text", text);
+            i.PutExtra("location", withLocation);
             if (OperatingSystem.IsAndroidVersionAtLeast(26)) ctx.StartForegroundService(i); else ctx.StartService(i);
         }
 

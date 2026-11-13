@@ -48,6 +48,21 @@ public sealed class TestRecord
     public List<string> Events { get; set; } = new();
     /// <summary>Detailed UDP / TCP statistics in both directions at the end of the test (1.8+; null in older records).</summary>
     public LinkDetail? Detail { get; set; }
+    /// <summary>Device location fixes (only when location reporting was turned on; empty otherwise).</summary>
+    public List<GeoFix> Locations { get; set; } = new();
+    /// <summary>Changes of the client's public IP address during the test.</summary>
+    public List<IpChange> IpChanges { get; set; } = new();
+    /// <summary>"IPv4" or "IPv6" (1.9+).</summary>
+    public string? Family { get; set; }
+    /// <summary>Seconds before the measured part of the test (idle baseline + capacity probe); older records: 0.</summary>
+    public double WarmupSec { get; set; }
+    /// <summary>Capacity found by the capacity test (NaN when not run).</summary>
+    public double CapacityUpMbps { get; set; } = double.NaN;
+    public double CapacityDownMbps { get; set; } = double.NaN;
+    public bool CapacityUpAtLimit { get; set; }
+    public bool CapacityDownAtLimit { get; set; }
+    /// <summary>Seconds to leave out when judging the test: the warm-up, or the idle baseline for older records.</summary>
+    public double JudgeAfterSec => Math.Max(WarmupSec, Config.BaselineSec);
 
     public string Mode => Config.DscpSimulate ? "DSCP simulate"
         : Config.Protocol == TransportKind.Mixed ? $"Mixed {Config.UdpSharePct:0}% UDP" : Config.Protocol.ToString().ToUpperInvariant();
@@ -61,12 +76,16 @@ public sealed class TestRecord
         var inv = CultureInfo.InvariantCulture;
         static string F(double v) => double.IsFinite(v) ? v.ToString("0.###", CultureInfo.InvariantCulture) : "";
         var sb = new StringBuilder();
-        sb.AppendLine("time,elapsed_s,up_mbps,down_mbps,rtt_ms,rtt_max_ms,jitter_up_ms,jitter_down_ms,loss_up_pct,loss_down_pct,gap_up_ms,gap_down_ms,mos");
         var s = Samples;
+        bool geo = s.Lat != null;
+        static string G(List<double>? v, int i) => v != null && i < v.Count && double.IsFinite(v[i]) ? v[i].ToString("0.######", CultureInfo.InvariantCulture) : "";
+        sb.AppendLine("time,elapsed_s,up_mbps,down_mbps,rtt_ms,rtt_max_ms,jitter_up_ms,jitter_down_ms,loss_up_pct,loss_down_pct,gap_up_ms,gap_down_ms,mos" +
+                      (geo ? ",lat,lon" : ""));
         for (int i = 0; i < s.T.Count; i++)
             sb.AppendLine(string.Join(",", StartedAt.AddSeconds(s.T[i]).ToString("yyyy-MM-dd HH:mm:ss", inv), F(s.T[i]),
                 F(s.Up[i]), F(s.Down[i]), F(s.Rtt[i]), F(s.RttMax[i]), F(s.JitUp[i]), F(s.JitDown[i]),
-                F(s.LossUp[i]), F(s.LossDown[i]), F(s.GapUp[i]), F(s.GapDown[i]), F(s.Mos[i])));
+                F(s.LossUp[i]), F(s.LossDown[i]), F(s.GapUp[i]), F(s.GapDown[i]), F(s.Mos[i])) +
+                (geo ? "," + G(s.Lat, i) + "," + G(s.Lon, i) : ""));
         return sb.ToString();
     }
 
@@ -96,6 +115,20 @@ public sealed class SampleSeries
     public List<double> GapUp { get; set; } = new();
     public List<double> GapDown { get; set; } = new();
     public List<double> Mos { get; set; } = new();
+    /// <summary>Device position each second (only when location reporting was on; null otherwise).</summary>
+    public List<double>? Lat { get; set; }
+    public List<double>? Lon { get; set; }
+
+    /// <summary>Records the device position for the sample just added (call after <see cref="Add"/>).</summary>
+    public void SetLocation(GeoFix? f)
+    {
+        if (f == null && Lat == null) return;
+        Lat ??= new List<double>();
+        Lon ??= new List<double>();
+        while (Lat.Count < T.Count - 1) { Lat.Add(double.NaN); Lon.Add(double.NaN); }
+        Lat.Add(f?.IsValid == true ? Math.Round(f.Lat, 6) : double.NaN);
+        Lon.Add(f?.IsValid == true ? Math.Round(f.Lon, 6) : double.NaN);
+    }
 
     public void Add(StatSample s)
     {
@@ -114,7 +147,7 @@ public sealed class SampleSeries
     {
         T = T.ToList(), Up = Up.ToList(), Down = Down.ToList(), Rtt = Rtt.ToList(), RttMax = RttMax.ToList(),
         JitUp = JitUp.ToList(), JitDown = JitDown.ToList(), LossUp = LossUp.ToList(), LossDown = LossDown.ToList(),
-        GapUp = GapUp.ToList(), GapDown = GapDown.ToList(), Mos = Mos.ToList(),
+        GapUp = GapUp.ToList(), GapDown = GapDown.ToList(), Mos = Mos.ToList(), Lat = Lat?.ToList(), Lon = Lon?.ToList(),
     };
 }
 
@@ -204,6 +237,7 @@ public sealed class ResultStore
                     r.Traces = new List<TraceResult>();
                     r.Detail = null;
                     r.ClassSeries = new List<ClassSeries>();
+                    r.Locations = r.Locations.Take(1).ToList();
                     e = new IndexEntry { Length = fi.Length, WriteTicks = fi.LastWriteTimeUtc.Ticks, Summary = r };
                     changed = true;
                 }

@@ -20,7 +20,12 @@ sealed class SettingsPage : ContentPage
     readonly Entry _up = Num(true), _down = Num(true), _size = Num(), _burstOn = Num(), _burstOff = Num(), _streams = Num(), _duration = Num();
     readonly Picker _profile = new() { ItemsSource = Enum.GetNames<TrafficProfile>() };
     readonly Picker _dscp = new() { ItemsSource = DscpItems };
-    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _bgSw = new();
+    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _locationSw = new(), _tlsSw = new(), _capacitySw = new();
+    static readonly string[] FamilyItems = { "Auto (IPv4 first)", "IPv4 only", "IPv6 only", "IPv4, then IPv6 (compare)" };
+    readonly Picker _family = new() { ItemsSource = FamilyItems };
+    readonly Entry _capacityPct = Num();
+    readonly Label _batteryState = new() { FontSize = 13, VerticalOptions = LayoutOptions.Center };
+    readonly Button _batteryBtn = new() { Text = "Allow", BackgroundColor = Ui.Accent, TextColor = Colors.White, FontSize = 13, HeightRequest = 40, Padding = new Thickness(12, 0) };
     readonly Entry _baseline = Num();
     readonly List<(CheckBox box, int index)> _tunnels = new();
     readonly VerticalStackLayout _form;
@@ -37,12 +42,19 @@ sealed class SettingsPage : ContentPage
         Row("Port (TCP + UDP)", _port);
         Row("Key", _key);
         SwitchRow("Look up my public IP details (ipinfo.io)", _ipLookup);
+        Row("Address family", _family);
+        _form.Add(Ui.Hint("\"IPv4, then IPv6\" runs the test twice, one after the other, and makes a side-by-side comparison report (set a duration)."));
+        SwitchRow("Require an encrypted connection", _tlsSw);
+        _form.Add(Ui.Hint("The control connection (key, settings, results) is encrypted whenever the server supports it (1.9+). The server's certificate is remembered the first time; you're asked if it changes."));
 
         _form.Add(Ui.Header("Traffic"));
         Row("Protocol", _proto);
         Row("UDP share (%) - mixed mode", _udpShare);
         Row("Upload / TX (Mbps)", _up);
         Row("Download / RX (Mbps)", _down);
+        SwitchRow("Find the capacity first", _capacitySw);
+        Row("…then test at (% of capacity)", _capacityPct);
+        _form.Add(Ui.Hint("Capacity test: ramps up from a few Mbps until the link saturates or reaches the upload / download rates above, then tests at this share of what it found. Needs a 1.9+ server."));
         Row("Packet size (bytes)", _size);
         Row("Traffic profile", _profile);
         Row("Burst on / off (ms) - bursty profile", BurstRow());
@@ -55,6 +67,9 @@ sealed class SettingsPage : ContentPage
         Row("Idle baseline (s) - for the bufferbloat grade, 0 = off", _baseline);
         SwitchRow("Measure path MTU when a test starts", _mtuSw);
         SwitchRow("Traceroute at start and on trouble", _traceSw);
+        SwitchRow("Report my location with the test", _locationSw);
+        _form.Add(Ui.Hint("Off by default. When on, the phone's position (GPS / network) is recorded every 10 s with the test results and reports, " +
+                          "and sent to the server. Android asks for location permission at the next test."));
 
         _form.Add(Ui.Header("VPN / tunnel simulations"));
         _form.Add(Ui.Hint("Each checked tunnel sends real keepalive and handshake probes with its own timers; it drops only if the link loses enough of them."));
@@ -82,9 +97,30 @@ sealed class SettingsPage : ContentPage
             _form.Add(row);
         }
 
+        _form.Add(Ui.Header("Background testing"));
+        _form.Add(Ui.Hint("Tests keep running with the screen off, the phone asleep or another app in front: LinkTest runs as a foreground " +
+                          "service with a notification and keeps the CPU and Wi-Fi awake while a test runs (only then)."));
+        var batteryRow = new Grid { ColumnDefinitions = { new(GridLength.Star), new(GridLength.Auto) }, Margin = new Thickness(0, 6, 0, 0) };
+        batteryRow.Add(_batteryState, 0);
+        batteryRow.Add(_batteryBtn, 1);
+        _form.Add(batteryRow);
+        _batteryBtn.Clicked += (_, _) =>
+        {
+            TestService.Battery.RequestExemption();
+            // The answer comes from a system screen: re-check for a minute so the status updates when it closes.
+            int checks = 0;
+            Dispatcher.StartTimer(TimeSpan.FromSeconds(1), () => { RefreshBattery(); return ++checks < 60 && !TestService.Battery.IsExempt; });
+        };
+        var oemHint = Ui.Hint("Some phones (Samsung, Xiaomi, Huawei, OnePlus…) add their own battery managers: also set LinkTest to \"Unrestricted\" " +
+                              "in the app's battery settings. Tap here for instructions for your phone (dontkillmyapp.com).");
+        oemHint.TextColor = Ui.Accent;
+        Ui.OnTap(oemHint, () => _ = Launcher.Default.OpenAsync("https://dontkillmyapp.com"));
+        _form.Add(oemHint);
+        var appBattery = new Button { Text = "Open LinkTest's app settings", BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent, FontSize = 13, HeightRequest = 40, HorizontalOptions = LayoutOptions.Start, Margin = new Thickness(0, 4, 0, 0) };
+        appBattery.Clicked += (_, _) => AppInfo.Current.ShowSettingsUI();
+        _form.Add(appBattery);
+
         _form.Add(Ui.Header("App"));
-        SwitchRow("Keep running in the background (notification)", _bgSw);
-        _form.Add(Ui.Hint("Keeps long tests going with the screen off or while using other apps. Android shows a notification while it runs."));
         SwitchRow("Keep the screen on during a test", _keepOn);
         SwitchRow("Check for updates at startup", _updates);
         _form.Add(Ui.Hint($"LinkTest {Updater.CurrentVersion} · {Updater.ProjectUrl}"));
@@ -120,6 +156,20 @@ sealed class SettingsPage : ContentPage
         _form.Add(control);
     }
 
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+        RefreshBattery();
+    }
+
+    void RefreshBattery()
+    {
+        bool ok = TestService.Battery.IsExempt;
+        _batteryState.Text = ok ? "Battery optimisation: LinkTest is exempt ✓" : "Battery optimisation: Android may pause long tests";
+        _batteryState.TextColor = ok ? Ui.Good : Ui.Warn;
+        _batteryBtn.IsVisible = !ok;
+    }
+
     void SwitchRow(string label, Switch sw)
     {
         var g = new Grid { ColumnDefinitions = { new(GridLength.Star), new(GridLength.Auto) }, Margin = new Thickness(0, 4) };
@@ -150,10 +200,14 @@ sealed class SettingsPage : ContentPage
             : Math.Max(0, Array.FindIndex(DscpItems, d => int.TryParse(d.Split(' ')[0], out var v) && v == c.Dscp));
         _duration.Text = c.DurationSec.ToString(CultureInfo.InvariantCulture);
         _keepOn.IsToggled = st.KeepScreenOn;
-        _bgSw.IsToggled = st.KeepRunningInBackground;
         _baseline.Text = c.BaselineSec.ToString(CultureInfo.InvariantCulture);
         _mtuSw.IsToggled = st.MeasureMtu;
         _traceSw.IsToggled = st.AutoTraceroute;
+        _locationSw.IsToggled = st.ShareLocation;
+        _family.SelectedIndex = st.Family switch { "4" => 1, "6" => 2, "both" => 3, _ => 0 };
+        _tlsSw.IsToggled = st.RequireTls;
+        _capacitySw.IsToggled = st.CapacityTest;
+        _capacityPct.Text = st.CapacityPct.ToString("0", CultureInfo.CurrentCulture);
         _updates.IsToggled = st.CheckForUpdates;
     }
 
@@ -180,10 +234,14 @@ sealed class SettingsPage : ContentPage
         c.DurationSec = Int(_duration, c.DurationSec, 0, 864000);
         foreach (var (box, i) in _tunnels) st.Tunnels[i].Enabled = box.IsChecked;
         st.KeepScreenOn = _keepOn.IsToggled;
-        st.KeepRunningInBackground = _bgSw.IsToggled;
         c.BaselineSec = Int(_baseline, c.BaselineSec, 0, 60);
         st.MeasureMtu = _mtuSw.IsToggled;
         st.AutoTraceroute = _traceSw.IsToggled;
+        st.ShareLocation = _locationSw.IsToggled;
+        st.Family = _family.SelectedIndex switch { 1 => "4", 2 => "6", 3 => "both", _ => "auto" };
+        st.RequireTls = _tlsSw.IsToggled;
+        st.CapacityTest = _capacitySw.IsToggled;
+        st.CapacityPct = Dbl(_capacityPct, st.CapacityPct, 10, 100);
         st.CheckForUpdates = _updates.IsToggled;
         st.Save();
     }

@@ -2,6 +2,78 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.9.0]
+
+### New
+- **Explanations for every statistic, with ideal values.** In the desktop client, server GUI and Android app:
+  - every live tile and chart has an ⓘ. Hover it for a summary, or click / tap it for what the figure means,
+    its ideal value, and what counts as good, fair or poor (for example RTT: good under 50 ms, fair 50-150 ms,
+    poor over 150 ms);
+  - the VPN tunnels, traffic classes, Statistics and server sessions tables have an "About these columns"
+    link (an ⓘ next to the section heading on Android) explaining every column;
+  - the desktop Statistics tab has a new *Ideal* column; hover a row for its meaning, double-click for details.
+    On Android, tap a statistic.
+
+- **Android: tests keep running with the screen off and the phone asleep.**
+  - Every test now runs as a foreground service with a notification, and the CPU and Wi-Fi are kept awake while
+    it runs (only then). The "keep running in the background" switch is gone: background testing is always on.
+  - The Wi-Fi lock now also works with the screen off. Before, Android 10+ phones took a low-latency lock, which
+    Android only applies while the screen is on and the app is in front.
+  - At the first test, LinkTest offers to be exempted from battery optimisation (Doze and app standby). A new
+    *Settings > Background testing* section shows the status, has an *Allow* button, and links to
+    instructions for phones with their own battery managers (Samsung, Xiaomi, Huawei, OnePlus…).
+  - If the phone pauses LinkTest anyway, the log says for how long, so the gap isn't mistaken for a network
+    problem.
+  - Swiping LinkTest away from Recents no longer ends a running test.
+
+- **Location reporting (optional, off by default).** In the desktop client (Diagnostics settings) and the Android app
+  (Settings > Diagnostics).
+  - When it's on, the device's position is recorded with the test: from the Windows location service, or from GPS /
+    network on Android. It's read every 10-15 s, and also with the screen off on Android.
+  - It goes into each second's CSV row, the saved result, the HTML and PDF reports (start point, and how far the device
+    moved), the Connection tab (with a map link), and to the server.
+  - The server GUI has a new *Device location* column (double-click a session for a map).
+  - On Windows, "Let desktop apps access your location" must be allowed in the privacy settings.
+- **Public IP changes are looked up again.**
+  - The client re-checks its public IP every minute, and right away when the network changes. On a change, it repeats
+    the ipinfo.io lookup, logs it, and lists it in the reports.
+  - When the server sees a client's traffic arrive from a new address, it looks that address up again and tells the
+    client (1.9 clients).
+
+- **Encrypted control connection (TLS).**
+  - The connection that carries the key, settings and results is now encrypted with TLS 1.2/1.3. The test traffic
+    itself is not, so encryption doesn't affect the measurements.
+  - The server creates a self-signed certificate on first start and keeps it. The console and GUI show its SHA-256
+    fingerprint.
+  - Clients remember each server's certificate the first time (like SSH). If it changes later, they ask before
+    connecting; the CLI needs `--trust-new-cert`.
+  - Older servers still work unencrypted, with a warning, unless *Require an encrypted connection* is on. Servers can
+    refuse unencrypted clients (*Require encrypted clients* / `--require-tls`). The server GUI marks encrypted
+    sessions with 🔒.
+- **Capacity test.**
+  - When *Find the capacity first* is on, the Upload / Download rates become the most to try. The client starts at
+    2 Mbps and raises the rate ×1.6 every 3 s until the link saturates (under 90% delivered or over 5% loss).
+  - It then runs the rest of the test at a chosen share of the capacity it found, 80% by default.
+  - The ramp-up is left out when traffic is judged and of the averages. The capacity appears in the log, the reports
+    and the comparison. Needs a 1.9 server. CLI: `--capacity [PCT]`.
+- **IPv4 vs IPv6.**
+  - New *Address family* setting: Auto, IPv4 only, IPv6 only, or IPv4 then IPv6.
+  - The last runs the same test over IPv4, then over IPv6. It then writes a side-by-side comparison report (HTML and
+    PDF) with the better result per figure and overlaid charts.
+  - The desktop History window can also compare any two saved tests (*Compare 2 selected…*).
+  - CLI: `--family 4|6|both`.
+- **Route map in the reports.** When location reporting was on and the device moved, the HTML and PDF reports draw
+  the route coloured second by second by link quality, with start / end, a scale, and the share of the distance that
+  was good, fair or poor. It's drawn from the recorded positions only (no map tiles), so the report stays
+  self-contained and the location isn't sent to a map service.
+
+### Changed
+- Android: the top bar is now light, matching the bottom tabs, with a light status bar. The ⋮ menu button is easy to see.
+- The ipinfo.io-based location is now labelled "IP location (approx.)", to tell it apart from the device location.
+- The desktop client now targets the Windows 10 SDK, for the location service. The download is about 10 MB larger.
+- The desktop tiles are a little wider. The upload and download tiles are now titled "Upload (to server)" and
+  "Download (from server)".
+
 ## [1.8.0]
 
 ### New

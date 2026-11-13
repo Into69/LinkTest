@@ -17,4 +17,9 @@
     <ProjectReference Include="..\LinkTest.Core\LinkTest.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared WinForms help UI (ⓘ explanations) -->
+    <Compile Include="..\LinkTest.Client\HelpUi.cs" Link="HelpUi.cs" />
+  </ItemGroup>
+
 </Project>

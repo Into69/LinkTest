@@ -8,7 +8,7 @@ if (opts == null)
         LinkTest server {Updater.CurrentVersion}  (a GUI version is available: LinkTestServerGui.exe)
 
         Usage: LinkTestServer [--port N] [--bind ADDRESS] [--key SECRET] [--max-mbps N] [--max-sessions N]
-                              [--auto-update | --no-update-check] [--no-ip-lookup]
+                              [--auto-update | --no-update-check] [--no-ip-lookup] [--require-tls] [--cert FILE]
                LinkTestServer --update | --update-from PACKAGE.zip | --version
 
           --port N              TCP and UDP port to listen on (default 7447)
@@ -19,6 +19,8 @@ if (opts == null)
           --auto-update         Check GitHub every 6 h; install new versions when no tests are running, then restart
           --no-update-check     Don't check for new versions at all
           --no-ip-lookup        Don't query ipinfo.io for client ISP / location (reverse DNS still shown)
+          --require-tls         Refuse clients that don't encrypt the control connection (clients older than 1.9)
+          --cert FILE           Server certificate (PFX, created on first start; default: per-user LinkTest folder)
           --update              Install the latest release now and exit
           --update-from FILE    Install from a downloaded release zip (offline update) and exit
 

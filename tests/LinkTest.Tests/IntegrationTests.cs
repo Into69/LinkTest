@@ -14,24 +14,46 @@ public sealed class ServerFixture : IAsyncLifetime
     readonly CancellationTokenSource _cts = new();
     Task? _run;
     public int Port { get; private set; }
+    public ServerHost Host { get; private set; } = null!;
+    /// <summary>Test certificate in a temp folder (never the user's profile).</summary>
+    public static readonly string CertPath = Path.Combine(Path.GetTempPath(), "linktest-tests-cert-" + Environment.ProcessId + ".pfx");
 
     public async Task InitializeAsync()
     {
         ServerHost.ConsoleOutput = false;
         Clock.EnableHighResolutionTimer();
-        var l = new TcpListener(IPAddress.Loopback, 0);
-        l.Start();
-        Port = ((IPEndPoint)l.LocalEndpoint).Port;
-        l.Stop();
-        var host = new ServerHost(new ServerOptions { Port = Port, NoIpLookup = true, MaxSessions = 4 }) { PeriodicStatus = false };
+        Port = FreePort();
+        var host = Host = new ServerHost(new ServerOptions { Port = Port, NoIpLookup = true, MaxSessions = 4, CertificatePath = CertPath }) { PeriodicStatus = false };
         _run = Task.Run(() => host.RunAsync(_cts.Token));
         await Task.Delay(500);
+        if (_run.IsFaulted) throw new InvalidOperationException("Test server failed to start on port " + Port, _run.Exception);
+    }
+
+    /// <summary>A port free for both TCP and UDP (the server uses the same number for both).</summary>
+    static int FreePort()
+    {
+        for (int i = 0; i < 50; i++)
+        {
+            var l = new TcpListener(IPAddress.Any, 0);
+            l.Start();
+            int port = ((IPEndPoint)l.LocalEndpoint).Port;
+            l.Stop();
+            try
+            {
+                using var u = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp) { DualMode = true };
+                u.Bind(new IPEndPoint(IPAddress.IPv6Any, port));
+                return port;
+            }
+            catch (SocketException) { }
+        }
+        throw new InvalidOperationException("no free TCP+UDP port");
     }
 
     public async Task DisposeAsync()
     {
         _cts.Cancel();
         if (_run != null) try { await _run; } catch { }
+        try { File.Delete(CertPath); } catch { }
     }
 }
 
@@ -46,9 +68,9 @@ public class IntegrationTests
     public IntegrationTests(ServerFixture server) => _server = server;
 
     async Task<(ClientSession session, StatSample last, List<StatSample> all)> RunAsync(TestConfig cfg, int seconds,
-        double lossPct = 0, IEnumerable<TunnelProfile>? tunnels = null)
+        double lossPct = 0, IEnumerable<TunnelProfile>? tunnels = null, bool plain = false)
     {
-        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false };
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false, UseTls = !plain };
         await session.StartAsync("127.0.0.1", _server.Port, null, cfg, tunnels ?? Array.Empty<TunnelProfile>(), lossPct,
             CancellationToken.None, ipLookup: false);
         var all = new List<StatSample>();
@@ -248,5 +270,88 @@ public class IntegrationTests
         Assert.NotNull(tcpUp.Tcp);       // client's kernel figures
         Assert.NotNull(tcpDown.Tcp);     // server's kernel figures, sent over the control connection
         Assert.True(tcpDown.Tcp!.Sockets > 0);
+    }
+
+    [Fact]
+    public async Task Location_IsRecordedAndReachesTheServer()
+    {
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false };
+        await session.StartAsync("127.0.0.1", _server.Port, null, new TestConfig { UpMbps = 1, DownMbps = 1, BaselineSec = 0 },
+            Array.Empty<TunnelProfile>(), 0, CancellationToken.None, ipLookup: false);
+        session.ReportLocation(new GeoFix(DateTime.Now, 45.4215, -75.6972, 12, Source: "test"));
+        await Task.Delay(1500);
+        session.TakeSample();
+        var snap = _server.Host.GetSessions().Single(x => x.Id == session.SessionId);
+        Assert.Equal(45.4215, snap.Location!.Lat, 4);
+        await session.StopAsync("test done");
+
+        var r = session.Record!;
+        Assert.Single(r.Locations);
+        Assert.Contains(",lat,lon", r.ToCsv().Split('\n')[0]);
+        Assert.Contains("45.4215", r.ToCsv());
+        Assert.Contains("Device location", ReportBuilder.Build(r));
+        Assert.Equal(45.4215, TestRecord.FromJson(r.ToJson())!.Locations[0].Lat, 4);
+    }
+
+    [Fact]
+    public async Task NoLocation_UnlessReported()
+    {
+        var (session, _, _) = await RunAsync(new TestConfig { UpMbps = 1, DownMbps = 1, BaselineSec = 0 }, 2);
+        Assert.Empty(session.Record!.Locations);
+        Assert.Null(session.Record.Samples.Lat);
+        Assert.DoesNotContain("lat,lon", session.Record.ToCsv());
+    }
+
+    [Fact]
+    public async Task ControlConnection_IsEncrypted_AndCertificateIsPinned()
+    {
+        var known = new KnownServers(Path.Combine(Path.GetTempPath(), "linktest-known-" + Guid.NewGuid().ToString("N") + ".json"));
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false, KnownServers = known, RequireTls = true };
+        await session.StartAsync("127.0.0.1", _server.Port, null, new TestConfig { UpMbps = 1, DownMbps = 1, BaselineSec = 0 },
+            Array.Empty<TunnelProfile>(), 0, CancellationToken.None, ipLookup: false);
+        Assert.StartsWith("TLS 1.", session.ControlSecurity);
+        Assert.Equal(_server.Host.CertificateFingerprint, known.Get($"127.0.0.1:{_server.Port}"));
+        Assert.Contains(_server.Host.GetSessions(), x => x.Id == session.SessionId && x.Security != null);
+        await Task.Delay(1500);
+        Assert.True(session.TakeSample().DownMbps > 0.5);
+        await session.StopAsync();
+
+        // A different remembered fingerprint must stop the connection.
+        known.Trust($"127.0.0.1:{_server.Port}", "00:11:22:33");
+        var s2 = new ClientSession { MeasureMtu = false, AutoTraceroute = false, KnownServers = known };
+        await Assert.ThrowsAsync<ServerCertificateChangedException>(() => s2.StartAsync("127.0.0.1", _server.Port, null,
+            new TestConfig { UpMbps = 1, DownMbps = 1 }, Array.Empty<TunnelProfile>(), 0, CancellationToken.None, ipLookup: false));
+    }
+
+    [Fact]
+    public async Task PlainControlConnection_StillWorks()
+    {
+        var (session, s, _) = await RunAsync(new TestConfig { UpMbps = 2, DownMbps = 2, BaselineSec = 0 }, 2, plain: true);
+        Assert.Equal("not encrypted", session.ControlSecurity);
+        Assert.True(s.DownMbps > 1);
+    }
+
+    [Fact]
+    public async Task CapacityTest_FindsTheRate_ThenTestsBelowIt()
+    {
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false, CapacityTest = true, CapacityTargetPct = 80 };
+        await session.StartAsync("127.0.0.1", _server.Port, null, new TestConfig { Protocol = TransportKind.Udp, UpMbps = 10, DownMbps = 10, BaselineSec = 0 },
+            Array.Empty<TunnelProfile>(), 0, CancellationToken.None, ipLookup: false);
+        var measured = new TaskCompletionSource();
+        session.CapacityMeasured += () => measured.TrySetResult();
+        var sampler = Task.Run(async () => { while (!measured.Task.IsCompleted) { await Task.Delay(1000); session.TakeSample(); } });
+        await measured.Task.WaitAsync(TimeSpan.FromSeconds(40));
+        await sampler;
+        // Loopback carries 10 Mbps easily: the ramp reaches the most to try without saturating.
+        Assert.InRange(session.CapacityDownMbps, 8, 11.5);
+        Assert.True(session.CapacityDownAtLimit);
+        Assert.InRange(session.Config.DownMbps, 6.4, 9.2);   // 80 %
+        await Task.Delay(1200); session.TakeSample();
+        await Task.Delay(1000);
+        var s = session.TakeSample();
+        Assert.InRange(s.DownMbps, session.Config.DownMbps * 0.85, session.Config.DownMbps * 1.15);
+        await session.StopAsync();
+        Assert.True(session.Record!.WarmupSec > 5);
+        Assert.Contains("Capacity", ReportBuilder.Build(session.Record));
     }
 }
