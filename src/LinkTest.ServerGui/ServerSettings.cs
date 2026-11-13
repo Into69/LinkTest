@@ -13,6 +13,7 @@ sealed class ServerSettings
     public double MaxMbps { get; set; } = 1000;
     public int MaxSessions { get; set; } = 8;
     public bool StartOnLaunch { get; set; }
+    public bool LookupClients { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
     public bool AutoInstallUpdates { get; set; }
 

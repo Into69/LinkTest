@@ -26,6 +26,23 @@ public sealed class ClientSession : IDisposable
     public IReadOnlyList<TrafficClass> Classes => _classes.Select(c => c.Def).ToList();
     public bool IsRunning => _running && !_stopping;
 
+    /// <summary>Addresses and IP-lookup results for this connection (updated as lookups complete).</summary>
+    public ConnectionInfo? Connection { get; private set; }
+    /// <summary>Raised (from a background thread) whenever <see cref="Connection"/> changes.</summary>
+    public event Action<ConnectionInfo>? ConnectionChanged;
+
+    /// <summary>Artificial random loss applied to UDP traffic and probes in both directions; can be changed while running.</summary>
+    public double ArtificialLossPct
+    {
+        get => Volatile.Read(ref _lossPct);
+        set
+        {
+            double v = double.IsFinite(value) ? Math.Clamp(value, 0, 100) : 0;
+            Volatile.Write(ref _lossPct, v);
+            foreach (var c in _classes) if (c.IsUdp) c.Eng.TxDropPct = v;
+        }
+    }
+
     sealed class ClassRuntime
     {
         public required int Index;
@@ -65,8 +82,9 @@ public sealed class ClientSession : IDisposable
     }
 
     /// <param name="artificialLossPct">Extra random loss applied by the client to UDP in both directions (testing aid).</param>
+    /// <param name="ipLookup">Look up this client's public IP details online (ipinfo.io).</param>
     public async Task StartAsync(string host, int port, string? key, TestConfig config,
-        IEnumerable<TunnelProfile> tunnels, double artificialLossPct, CancellationToken ct)
+        IEnumerable<TunnelProfile> tunnels, double artificialLossPct, CancellationToken ct, bool ipLookup = true)
     {
         if (_running) throw new InvalidOperationException("Already started");
         _running = true;
@@ -105,6 +123,7 @@ public sealed class ClientSession : IDisposable
             Config = welcome.Config ?? config;
             if (!string.IsNullOrEmpty(welcome.Message)) Emit("Server: " + welcome.Message);
             _lossPct = Math.Clamp(artificialLossPct, 0, 100);
+            StartConnectionLookup(host, ctrlSock.LocalEndPoint as IPEndPoint, welcome.ClientAddress, ipLookup);
 
             // Classes, sockets and engines
             var defs = TrafficClasses.Resolve(Config);
@@ -197,6 +216,48 @@ public sealed class ClientSession : IDisposable
         }
     }
 
+    void StartConnectionLookup(string host, IPEndPoint? local, string? seenByServer, bool online)
+    {
+        string localStr = local == null ? "?" : $"{Protocol.Normalize(local.Address)}:{local.Port}";
+        IPAddress? seenIp = null;
+        if (seenByServer != null)
+        {
+            int colon = seenByServer.LastIndexOf(':');
+            string ipPart = colon > 0 ? seenByServer[..colon].Trim('[', ']') : seenByServer;
+            IPAddress.TryParse(ipPart, out seenIp);
+        }
+        string nat = seenIp == null ? "Unknown (server older than 1.4)"
+            : local != null && Protocol.Normalize(local.Address).Equals(seenIp) ? "No NAT - the server sees this computer's own address"
+            : "Behind NAT - the server sees a different (translated) address";
+        var info = new ConnectionInfo($"{host} ({ServerEndPoint})", localStr, seenByServer, nat, null, null, false);
+        SetConnection(info);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                Task<IpInfo>? seenTask = seenIp != null ? IpLookup.LookupAsync(seenIp, online, _cts.Token) : null;
+                Task<IpInfo>? pubTask = online ? IpLookup.LookupAsync(null, true, _cts.Token) : null;
+                IpInfo? seen = seenTask != null ? await seenTask : null;
+                IpInfo? pub = pubTask != null ? await pubTask : null;
+                var done = info with { SeenByServerInfo = seen, PublicInfo = pub, LookupComplete = true };
+                if (seen != null && pub != null && pub.Error == null && !seen.IsPublic && pub.Ip != seen.Ip)
+                    done = done with { NatStatus = $"Not applicable - the test runs over a private path ({seen.Scope}); this computer's internet address is {pub.Ip}" };
+                SetConnection(done);
+                Emit("Client IP: " + (pub != null ? pub.Summary : seen != null ? seen.Summary : localStr) +
+                     (seenByServer != null ? $" | seen by server as {seenByServer}" : ""));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception e) { Emit("IP lookup failed: " + e.Message); }
+        });
+    }
+
+    void SetConnection(ConnectionInfo c)
+    {
+        Connection = c;
+        ConnectionChanged?.Invoke(c);
+    }
+
     async Task<Socket> OpenStreamAsync(int idx, CancellationToken ct)
     {
         var s = await ConnectTcpAsync(ServerEndPoint!, ct);
@@ -287,7 +348,7 @@ public sealed class ClientSession : IDisposable
             _ctrl?.TrySend(new ControlMessage { Type = "tprobe", Tunnel = sim.Index, Seq = seq, Kind = kind, Time = now });
             return;
         }
-        if (Chance(_lossPct)) return;
+        if (Chance(ArtificialLossPct)) return;
         var buf = new byte[Math.Clamp(size, Protocol.HeaderSize, 9000)];
         new PacketHeader
         {
@@ -309,7 +370,7 @@ public sealed class ClientSession : IDisposable
             catch (ObjectDisposedException) { break; }
             long now = Clock.NowUs;
             if (!PacketHeader.TryRead(buf.AsSpan(0, n), out var h) || h.SessionId != SessionId || h.Type != PacketType.Data) continue;
-            if (Chance(_lossPct)) continue;
+            if (Chance(ArtificialLossPct)) continue;
             c.Eng.HandlePacket(buf.AsSpan(0, n), h, now);
         }
     }
@@ -325,7 +386,7 @@ public sealed class ClientSession : IDisposable
             catch (ObjectDisposedException) { break; }
             long now = Clock.NowUs;
             if (!PacketHeader.TryRead(buf.AsSpan(0, n), out var h) || h.SessionId != SessionId) continue;
-            if (Chance(_lossPct)) continue;
+            if (Chance(ArtificialLossPct)) continue;
             if (h.Type == PacketType.ProbeResp && h.StreamId < _tunnels.Count)
                 _tunnels[h.StreamId].OnResponse(h.Seq, h.Flags, h.SendUs, now);
         }

@@ -8,7 +8,7 @@ if (opts == null)
         LinkTest server {Updater.CurrentVersion}  (a GUI version is available: LinkTestServerGui.exe)
 
         Usage: LinkTestServer [--port N] [--bind ADDRESS] [--key SECRET] [--max-mbps N] [--max-sessions N]
-                              [--auto-update | --no-update-check]
+                              [--auto-update | --no-update-check] [--no-ip-lookup]
                LinkTestServer --update | --update-from PACKAGE.zip | --version
 
           --port N              TCP and UDP port to listen on (default 7447)
@@ -18,6 +18,7 @@ if (opts == null)
           --max-sessions N      Concurrent sessions allowed (default 8)
           --auto-update         Check GitHub every 6 h; install new versions when no tests are running, then restart
           --no-update-check     Don't check for new versions at all
+          --no-ip-lookup        Don't query ipinfo.io for client ISP / location (reverse DNS still shown)
           --update              Install the latest release now and exit
           --update-from FILE    Install from a downloaded release zip (offline update) and exit
 

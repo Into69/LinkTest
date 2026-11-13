@@ -55,6 +55,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --tunnels LIST     'default', 'all', 'none' or comma-separated name fragments (default: default)
           --loss PCT         artificial random loss in both directions (testing aid)
           --csv FILE         write per-second samples to a CSV file
+          --no-ip-lookup     don't query ipinfo.io for this client's public IP details
         """);
     return 0;
 }
@@ -63,6 +64,7 @@ string host = args[0];
 int port = Protocol.DefaultPort;
 string? key = null, csvPath = null, tunnelSel = "default";
 double loss = 0;
+bool ipLookup = true;
 var cfg = new TestConfig { DurationSec = 10 };
 for (int i = 1; i < args.Length; i++)
 {
@@ -89,6 +91,7 @@ for (int i = 1; i < args.Length; i++)
         case "--tunnels": tunnelSel = Next(); break;
         case "--loss": loss = double.Parse(Next(), inv); break;
         case "--csv": csvPath = Next(); break;
+        case "--no-ip-lookup": ipLookup = false; break;
         default: Console.Error.WriteLine($"Unknown option {args[i]}"); return 1;
     }
 }
@@ -114,7 +117,7 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 try
 {
-    await session.StartAsync(host, port, key, cfg, tunnels.ToList(), loss, cts.Token);
+    await session.StartAsync(host, port, key, cfg, tunnels.ToList(), loss, cts.Token, ipLookup);
 }
 catch (Exception e)
 {
@@ -123,6 +126,26 @@ catch (Exception e)
 }
 
 using var csv = csvPath != null ? new CsvLogger(csvPath) : null;
+// Interactive: type "loss N" + Enter to change the artificial loss while the test runs.
+_ = Task.Run(async () =>
+{
+    try
+    {
+        string? line;
+        while ((line = await Console.In.ReadLineAsync()) != null)
+        {
+            var parts = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2 && parts[0].Equals("loss", StringComparison.OrdinalIgnoreCase) &&
+                double.TryParse(parts[1].TrimEnd('%'), NumberStyles.Float, inv, out var pct))
+            {
+                session.ArtificialLossPct = pct;
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss} Artificial loss changed to {session.ArtificialLossPct}%");
+            }
+            else if (parts.Length > 0) Console.WriteLine("Commands: loss <percent>");
+        }
+    }
+    catch { }
+});
 Console.WriteLine("  time |   tx Mbps |   up Mbps  loss%  jit ms | down Mbps  loss%  jit ms |  rtt ms (min/max)      | MOS");
 while (!cts.IsCancellationRequested && !ended.Task.IsCompleted)
 {

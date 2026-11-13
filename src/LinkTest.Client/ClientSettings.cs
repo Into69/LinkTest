@@ -16,6 +16,7 @@ sealed class ClientSettings
     public string CsvFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LinkTest");
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
     public bool CheckForUpdates { get; set; } = true;
+    public bool IpLookup { get; set; } = true;
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinkTest", "client-settings.json");
 

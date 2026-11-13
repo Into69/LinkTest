@@ -7,7 +7,8 @@ namespace LinkTest.Server;
 /// <summary>Live counters of a session, for status displays.</summary>
 public sealed record SessionSnapshot(
     uint Id, string Client, string? ClientVersion, string Mode, DateTime Started, bool Running,
-    long RxBytes, long TxBytes, long Lost, long Expected, double RttMs, int Classes);
+    long RxBytes, long TxBytes, long Lost, long Expected, double RttMs, int Classes,
+    IpInfo? ClientInfo);
 
 /// <summary>Server side of one client test. Each traffic class has its own engine and sockets.</summary>
 public sealed class ServerSession : IDisposable
@@ -38,6 +39,7 @@ public sealed class ServerSession : IDisposable
     bool _started, _disposed;
     DateTime _startedAt = DateTime.Now;
     string? _clientVersion;
+    volatile IpInfo? _clientInfo;
     int _dscpWarned;
 
     void DscpWarn(string? err)
@@ -115,7 +117,9 @@ public sealed class ServerSession : IDisposable
             {
                 Type = "welcome", Version = Protocol.Version, AppVersion = Updater.CurrentVersion.ToString(),
                 SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note,
+                ClientAddress = $"{(ClientIp.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{ClientIp}]" : ClientIp.ToString())}:{_remote.Port}",
             });
+            _ = LookupClientAsync(token);
             ServerHost.Log($"{Tag} session opened{(_clientVersion != null ? $" (client {_clientVersion})" : "")}: {cfg}");
 
             while (!token.IsCancellationRequested)
@@ -156,6 +160,18 @@ public sealed class ServerSession : IDisposable
                 _host.Unregister(this);
             }
         }
+    }
+
+    async Task LookupClientAsync(CancellationToken ct)
+    {
+        try
+        {
+            var info = await IpLookup.LookupAsync(ClientIp, !_host.Options.NoIpLookup, ct);
+            _clientInfo = info;
+            ServerHost.Log($"{Tag} client: {info.Summary}");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { ServerHost.Log($"{Tag} client lookup failed: {e.Message}"); }
     }
 
     void Start()
@@ -293,7 +309,7 @@ public sealed class ServerSession : IDisposable
         var first = _classes.FirstOrDefault(c => c.IsUdp) ?? _classes.FirstOrDefault();
         string mode = _cfg.DscpSimulate ? $"DSCP sim ({_classes.Count})" : _cfg.Protocol.ToString();
         return new SessionSnapshot(Id, ClientIp.ToString(), _clientVersion, mode, _startedAt, _started,
-            rx, tx, lost, exp, first != null ? first.Eng.SmoothedRttUs / 1000 : double.NaN, _classes.Count);
+            rx, tx, lost, exp, first != null ? first.Eng.SmoothedRttUs / 1000 : double.NaN, _classes.Count, _clientInfo);
     }
 
     public void PrintStatus()

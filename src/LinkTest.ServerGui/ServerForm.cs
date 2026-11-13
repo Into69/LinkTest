@@ -20,6 +20,7 @@ sealed class ServerForm : Form
     readonly NumericUpDown _maxMbps = Num(1, 100000);
     readonly NumericUpDown _maxSessions = Num(1, 64);
     readonly CheckBox _startOnLaunch = new() { Text = "Start the server when this window opens", AutoSize = true };
+    readonly CheckBox _lookupClients = new() { Text = "Look up client IP details (ISP, location via ipinfo.io)", AutoSize = true };
     readonly CheckBox _autoInstall = new() { Text = "Install updates automatically when no tests are running", AutoSize = true };
     readonly Button _startBtn = new() { Text = "Start server", Height = 36, Width = 150 };
     readonly Button _stopBtn = new() { Text = "Stop server", Height = 36, Width = 120, Enabled = false };
@@ -96,10 +97,12 @@ sealed class ServerForm : Form
         AddField(settings, "Max concurrent tests", _maxSessions, 0, 2, "Further clients are refused while this many tests run.");
         var checks = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0) };
         checks.Controls.Add(_startOnLaunch);
+        checks.Controls.Add(_lookupClients);
+        _tips.SetToolTip(_lookupClients, "Public client addresses are looked up at ipinfo.io; private/LAN addresses get reverse DNS only.");
         checks.Controls.Add(_autoInstall);
         settings.Controls.Add(checks, 2, 2);
         settings.SetColumnSpan(checks, 2);
-        _inputs.AddRange(new Control[] { _startOnLaunch });
+        _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients });
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 6, 12, 6), BackColor = Color.FromArgb(235, 238, 242), WrapContents = true };
         _startBtn.Font = new Font(Font, FontStyle.Bold);
@@ -112,8 +115,8 @@ sealed class ServerForm : Form
         var addrPanel = new Panel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6) };
         addrPanel.Controls.Add(_addresses);
 
-        foreach (var (name, w) in new[] { ("Session", 80), ("Client", 130), ("Version", 60), ("Mode", 120), ("Duration", 70), ("Rx / upload Mbps", 110),
-                                          ("Tx / download Mbps", 120), ("Loss %", 60), ("RTT ms", 60), ("Classes", 55) })
+        foreach (var (name, w) in new[] { ("Session", 80), ("Client", 130), ("Host (reverse DNS)", 170), ("ISP / ASN", 180), ("Location", 160), ("Version", 60),
+                                          ("Mode", 110), ("Duration", 70), ("Rx / upload Mbps", 110), ("Tx / download Mbps", 120), ("Loss %", 60), ("RTT ms", 60), ("Classes", 55) })
             _sessions.Columns.Add(name, (int)(w * DeviceDpi / 96f));
 
         var sessionsBox = new GroupBox { Text = "Active tests", Dock = DockStyle.Fill, Padding = new Padding(6) };
@@ -182,6 +185,7 @@ sealed class ServerForm : Form
         _maxMbps.Value = (decimal)Math.Clamp(_settings.MaxMbps, 1, 100000);
         _maxSessions.Value = Math.Clamp(_settings.MaxSessions, 1, 64);
         _startOnLaunch.Checked = _settings.StartOnLaunch;
+        _lookupClients.Checked = _settings.LookupClients;
         _autoInstall.Checked = _settings.AutoInstallUpdates;
         _status.Text = "Server stopped";
     }
@@ -194,6 +198,7 @@ sealed class ServerForm : Form
         _settings.MaxMbps = (double)_maxMbps.Value;
         _settings.MaxSessions = (int)_maxSessions.Value;
         _settings.StartOnLaunch = _startOnLaunch.Checked;
+        _settings.LookupClients = _lookupClients.Checked;
         _settings.AutoInstallUpdates = _autoInstall.Checked;
         _settings.Save();
     }
@@ -227,6 +232,7 @@ sealed class ServerForm : Form
             Key = string.IsNullOrEmpty(_key.Text) ? null : _key.Text,
             MaxMbps = (double)_maxMbps.Value,
             MaxSessions = (int)_maxSessions.Value,
+            NoIpLookup = !_lookupClients.Checked,
         };
         _host = new ServerHost(opts) { PeriodicStatus = false };
         _hostCts = new CancellationTokenSource();
@@ -306,7 +312,11 @@ sealed class ServerForm : Form
             var dur = now - s.Started;
             var item = new ListViewItem(new[]
             {
-                s.Id.ToString("X8"), s.Client, s.ClientVersion ?? "?", s.Mode,
+                s.Id.ToString("X8"), s.Client,
+                s.ClientInfo == null ? "looking up…" : s.ClientInfo.Hostname ?? "-",
+                s.ClientInfo == null ? "" : s.ClientInfo.Org ?? (s.ClientInfo.IsPublic ? "-" : s.ClientInfo.Scope),
+                s.ClientInfo == null ? "" : s.ClientInfo.Location.Length > 0 ? s.ClientInfo.Location : "-",
+                s.ClientVersion ?? "?", s.Mode,
                 s.Running ? $"{(int)dur.TotalHours}:{dur.Minutes:00}:{dur.Seconds:00}" : "starting",
                 rx, tx, loss, double.IsFinite(s.RttMs) ? s.RttMs.ToString("0.0", CultureInfo.CurrentCulture) : "–", s.Classes.ToString(),
             });

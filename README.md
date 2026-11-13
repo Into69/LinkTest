@@ -69,7 +69,17 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
   Class names and DSCP values follow RFC 4594 and the Cisco QoS baseline. The shares follow common design
   guidance: real-time traffic at most about 33% of the link, best effort at least 25%, scavenger about 1%.
   The individual percentages are representative, not a standard.
-- **Artificial loss %**: a testing aid. The client randomly drops this share of packets in both directions.
+- **Artificial loss %**: a testing aid. The client randomly drops this share of UDP packets in both
+  directions. It can be changed while a test runs, for example raised to watch tunnels drop and then
+  lowered to see whether they recover. In the CLI, type `loss 20` and press Enter.
+- **IP lookup** of the client, done by both sides:
+  - The client's *Connection* tab shows the local address, the address the server sees, whether NAT is in
+    between, and the client's public IP details: reverse DNS, ISP/ASN, approximate location and timezone.
+  - The server shows each client's reverse DNS, ISP and location in its log and sessions table.
+  - Details for public addresses come from `ipinfo.io`. Private and LAN addresses are classified locally
+    and never sent out.
+  - Online lookups can be turned off: a checkbox in both GUIs, `--no-ip-lookup` for the CLI and the
+    console server.
 - **CSV logging**: writes one row per second.
 
 **CLI**: `LinkTestCli.exe server.example.com --udp --up 20 --down 50 --profile voip --time 0 --tunnels all --csv log.csv`

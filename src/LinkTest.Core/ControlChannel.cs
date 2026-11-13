@@ -20,6 +20,8 @@ public sealed class ControlMessage
     public uint SessionId { get; set; }
     public int UdpPort { get; set; }
     public string? Message { get; set; }
+    /// <summary>Welcome: the client's address and port as seen by the server (1.4+).</summary>
+    public string? ClientAddress { get; set; }
     public int Tunnel { get; set; }
     public long Seq { get; set; }
     public int Kind { get; set; }

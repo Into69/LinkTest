@@ -50,6 +50,8 @@ sealed class MainForm : Form
     readonly ListView _tunnelView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
     readonly ListView _classView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true };
     readonly TabControl _bottomTabs = new() { Dock = DockStyle.Fill };
+    readonly ListView _connView = new() { View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, GridLines = true, HeaderStyle = ColumnHeaderStyle.Nonclickable };
+    readonly CheckBox _ipLookup = new() { Text = "Look up my public IP details (ipinfo.io)", AutoSize = true };
     readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
     readonly ToolStripStatusLabel _status = new() { Text = "Idle", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
@@ -101,6 +103,14 @@ sealed class MainForm : Form
         _proto.SelectedIndexChanged += (_, _) => OnProtocolChanged();
         _profile.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
         _dscp.SelectedIndexChanged += (_, _) => UpdateEnabledInputs();
+        _loss.ValueChanged += (_, _) =>
+        {
+            if (_session is { IsRunning: true } s && Math.Abs(s.ArtificialLossPct - (double)_loss.Value) > 1e-9)
+            {
+                s.ArtificialLossPct = (double)_loss.Value;
+                AppendLog($"Artificial loss changed to {_loss.Value}%");
+            }
+        };
         FormClosing += (_, _) => { SaveUiToSettings(); _session?.Dispose(); _csvLog?.Dispose(); };
     }
 
@@ -117,6 +127,10 @@ sealed class MainForm : Form
         Row(form, "Server IP / FQDN", _host, "Address or DNS name of the machine running LinkTestServer.exe");
         Row(form, "Port", _port, "TCP and UDP port of the server (default 7447)");
         Row(form, "Key", _key, "Shared key, if the server was started with --key");
+        form.Controls.Add(_ipLookup); form.SetColumnSpan(_ipLookup, 2);
+        _inputs.Add(_ipLookup);
+        _tips.SetToolTip(_ipLookup, "When a test starts, look up this computer's public IP address, ISP (ASN), approximate location and reverse DNS via ipinfo.io. " +
+            "Shown on the Connection tab. Private / LAN addresses are never sent out. The server does the same lookup of the client's address.");
 
         Header(form, "Traffic");
         Row(form, "Protocol", _proto, "UDP shows real packet loss / reordering. TCP shows what an application sees: retransmissions, stalls and throughput collapse.\n" +
@@ -137,7 +151,8 @@ sealed class MainForm : Form
             "Call signaling CS3 2% · Streaming video AF31 12% · Transactional AF21 12% · Bulk AF11 12% · Best effort 30% · Scavenger CS1 1% (TCP)\n" +
             "Protocol, profile, UDP share and TCP streams are set per class in this mode. See the Traffic classes tab while running.");
         Row(form, "Duration (s, 0 = ∞)", _duration, "Stop automatically after this many seconds. 0 runs until you press Stop - useful for long-term monitoring.");
-        Row(form, "Artificial loss (%)", _loss, "Testing aid: the client randomly discards this percentage of packets in both directions, to see how the tunnels react.");
+        Row(form, "Artificial loss (%)", _loss, "Testing aid: the client randomly discards this percentage of UDP packets in both directions, to see how the tunnels react.\n" +
+            "Can be changed while a test is running - e.g. raise it to watch tunnels drop, then lower it to see whether they recover.");
 
         Header(form, "VPN / tunnel simulations");
         var tunnelHelp = new Label
@@ -226,8 +241,13 @@ sealed class MainForm : Form
         tunnelsTab.Controls.Add(_tunnelView);
         var classesTab = new TabPage("Traffic classes");
         classesTab.Controls.Add(_classView);
+        _connView.Columns.Add("Item", (int)(190 * DeviceDpi / 96f));
+        _connView.Columns.Add("Value", (int)(720 * DeviceDpi / 96f));
+        var connTab = new TabPage("Connection");
+        connTab.Controls.Add(_connView);
         _bottomTabs.TabPages.Add(tunnelsTab);
         _bottomTabs.TabPages.Add(classesTab);
+        _bottomTabs.TabPages.Add(connTab);
 
         var bottom = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         bottom.Panel1.Controls.Add(_bottomTabs);
@@ -316,6 +336,7 @@ sealed class MainForm : Form
         _duration.Value = Math.Clamp(c.DurationSec, 0, 864000);
         _loss.Value = (decimal)Math.Clamp(_settings.ArtificialLossPct, 0, 100);
         _csv.Checked = _settings.CsvEnabled;
+        _ipLookup.Checked = _settings.IpLookup;
         _csvFolder.Text = _settings.CsvFolder;
         RefreshTunnelList();
         UpdateEnabledInputs();
@@ -329,6 +350,7 @@ sealed class MainForm : Form
         _settings.Config = ReadConfig();
         _settings.ArtificialLossPct = (double)_loss.Value;
         _settings.CsvEnabled = _csv.Checked;
+        _settings.IpLookup = _ipLookup.Checked;
         _settings.CsvFolder = _csvFolder.Text.Trim();
         for (int i = 0; i < _settings.Tunnels.Count && i < _tunnelList.Items.Count; i++)
             _settings.Tunnels[i].Enabled = _tunnelList.GetItemChecked(i);
@@ -367,7 +389,11 @@ sealed class MainForm : Form
     {
         bool idle = _session == null;
         foreach (var c in _inputs) c.Enabled = idle;
-        if (!idle) return;
+        if (!idle)
+        {
+            _loss.Enabled = true;   // adjustable while a test runs
+            return;
+        }
         bool sim = DscpSimulateSelected;   // classes define transport / profile / streams
         _proto.Enabled = _profile.Enabled = !sim;
         _streams.Enabled = !sim && _proto.SelectedIndex >= 1;
@@ -457,6 +483,7 @@ sealed class MainForm : Form
         var session = new ClientSession();
         session.Log += m => Ui(() => AppendLog(m));
         session.Ended += r => Ui(() => OnEnded(session, r));
+        session.ConnectionChanged += c => Ui(() => ShowConnection(c));
         _session = session;
         UpdateEnabledInputs();
         _start.Enabled = false;
@@ -464,13 +491,14 @@ sealed class MainForm : Form
         _chartTput.Clear(); _chartLat.Clear(); _chartLoss.Clear();
         _tunnelView.Items.Clear();
         _classView.Items.Clear();
+        _connView.Items.Clear();
         foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tTime }) t.Set("–");
         _status.Text = $"Connecting to {host}…";
 
         _connectCts = new CancellationTokenSource();
         try
         {
-            await session.StartAsync(host, (int)_port.Value, _key.Text, cfg, tunnels, (double)_loss.Value, _connectCts.Token);
+            await session.StartAsync(host, (int)_port.Value, _key.Text, cfg, tunnels, (double)_loss.Value, _connectCts.Token, _ipLookup.Checked);
         }
         catch (Exception e)
         {
@@ -602,6 +630,36 @@ sealed class MainForm : Form
             };
         }
         _tunnelView.EndUpdate();
+    }
+
+    void ShowConnection(ConnectionInfo c)
+    {
+        var rows = new List<(string, string)>
+        {
+            ("Server", c.Server),
+            ("Local address (this PC)", c.LocalAddress),
+            ("Address seen by server", c.SeenByServer ?? "(server older than 1.4)"),
+            ("NAT", c.NatStatus),
+        };
+        if (c.SeenByServerInfo is IpInfo seen && (c.PublicInfo == null || c.PublicInfo.Ip != seen.Ip))
+            rows.Add(("Seen-by-server details", seen.Summary));
+        var p = c.PublicInfo;
+        if (p != null)
+        {
+            rows.Add(("Public IP", p.Ip + (p.IsPublic ? "" : $"  ({p.Scope})")));
+            rows.Add(("Reverse DNS", p.Hostname ?? "(none)"));
+            rows.Add(("ISP / ASN", p.Org ?? "-"));
+            rows.Add(("Location (approx.)", p.Location.Length > 0 ? p.Location : "-"));
+            rows.Add(("Timezone", p.Timezone ?? "-"));
+        }
+        rows.Add(("Lookup", !_ipLookup.Checked ? "Online lookup disabled (reverse DNS only)"
+            : !c.LookupComplete ? "Looking up…"
+            : p?.Error != null ? $"{IpLookup.Service}: {p.Error}" : $"via {IpLookup.Service}"));
+
+        _connView.BeginUpdate();
+        _connView.Items.Clear();
+        foreach (var (k, v) in rows) _connView.Items.Add(new ListViewItem(new[] { k, v }));
+        _connView.EndUpdate();
     }
 
     void UpdateClassView(StatSample s)
