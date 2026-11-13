@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LinkTest.Cli/LinkTest.Cli.csproj" />
+    <Project Path="src/LinkTest.Client/LinkTest.Client.csproj" />
+    <Project Path="src/LinkTest.Core/LinkTest.Core.csproj" />
+    <Project Path="src/LinkTest.Server/LinkTest.Server.csproj" />
+  </Folder>
+</Solution>
