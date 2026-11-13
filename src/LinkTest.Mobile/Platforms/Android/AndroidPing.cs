@@ -16,6 +16,9 @@ static class AndroidPing
     static readonly Regex Reply = new(@"bytes from ([0-9a-fA-F:.]+).*?time=([\d.]+)\s*ms", RegexOptions.Compiled);
     static readonly Regex Exceeded = new(@"From ([0-9a-fA-F:.]+).*(Time to live exceeded|Hop limit|Time exceeded)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    /// <summary>ping6's hop-limit flag, once one has worked ("-h" on some builds, "-t" on others); null = not known yet.</summary>
+    static volatile string? _v6HopFlag;
+
     public static void Register()
     {
         PathTracer.CustomProber = ProbeAsync;
@@ -31,11 +34,15 @@ static class AndroidPing
         {
             v6 ? "/system/bin/ping6" : "/system/bin/ping", "-n", "-c", probes.ToString(CultureInfo.InvariantCulture), "-i", "0.2",
             "-W", waitSec.ToString(CultureInfo.InvariantCulture), "-w", deadline.ToString(CultureInfo.InvariantCulture),
-            v6 ? "-h" : "-t", ttl.ToString(CultureInfo.InvariantCulture), target.ToString(),
+            v6 ? _v6HopFlag ?? "-h" : "-t", ttl.ToString(CultureInfo.InvariantCulture), target.ToString(),
         };
-        // ping6 uses -h for the hop limit on some builds; fall back to -t if that fails.
         var result = Run(cmd, target, probes, ct);
-        if (v6 && result.Error != null) { cmd[^3] = "-t"; result = Run(cmd, target, probes, ct); }
+        if (!v6 || _v6HopFlag != null) return result;
+        // First IPv6 trace: find out which flag this ping6 takes, then remember it.
+        if (result.Error == null) { _v6HopFlag = "-h"; return result; }
+        cmd[^3] = "-t";
+        result = Run(cmd, target, probes, ct);
+        if (result.Error == null) _v6HopFlag = "-t";
         return result;
     }, ct);
 

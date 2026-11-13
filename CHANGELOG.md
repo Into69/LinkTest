@@ -33,6 +33,17 @@ Each release's notes on GitHub are taken from its section below.
 ### Fixed
 - Android: traceroute could crash the app. .NET started many `ping` processes in parallel, which its runtime
   can't handle on Android; it now uses Android's process API, six hops at a time.
+- Android: traceroute stops once it reaches the server instead of probing all 30 hops (about 3 s instead of 15 s).
+  IPv6 traces no longer start `ping` twice per hop.
+- Android: if a test ended while the notification-permission prompt was open, background mode could start
+  afterwards and keep the phone awake.
+- Android tunnel editor: decimal values work on phones set to languages that use a decimal comma, and
+  values that can't be read are reported instead of being silently ignored.
+- Durations of a day or more are shown in full hours (26:00:00, not 2:00:00) in History and in reports.
+- Desktop: failing to save or open a report or CSV shows a message instead of an error dialog.
+- History opens quickly with many long tests: the list reads a small summary index, and full results are
+  loaded only when a report or CSV is made.
+- Download loss is shown as "not measured" (–) when nothing was received, instead of 0%.
 
 ## [1.6.0]
 

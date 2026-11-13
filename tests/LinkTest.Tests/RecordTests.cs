@@ -74,10 +74,47 @@ public class RecordTests
             string path = store.Save(Sample());
             var list = store.List();
             Assert.Single(list);
-            Assert.Equal("t1", list[0].record.Id);
+            Assert.Equal("t1", list[0].Summary.Id);
+            Assert.Empty(list[0].Summary.Samples.T);              // the listing leaves out the bulky parts
+            Assert.Equal(2, list[0].Load().Samples.T.Count);       // the full record is read on demand
+            Assert.True(File.Exists(Path.Combine(dir, ".index.json")));
+
+            // Served from the index the second time; a file changed outside the app is re-read.
+            Assert.Equal("t1", store.List()[0].Summary.Id);
+            var changed = Sample();
+            changed.Id = "t2-changed";   // different length too, in case timestamps are coarse
+            File.WriteAllText(path, changed.ToJson());
+            Assert.Equal("t2-changed", store.List()[0].Summary.Id);
+
             ResultStore.Delete(path);
             Assert.Empty(store.List());
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public void RecordSamplesAreACopy()
+    {
+        var a = new SampleSeries();
+        a.Add(new StatSample { ElapsedSec = 1 });
+        var b = a.Clone();
+        a.Add(new StatSample { ElapsedSec = 2 });
+        Assert.Single(b.T);
+        Assert.Single(b.Mos);
+    }
+
+    [Theory]
+    [InlineData(0, "0:00:00")]
+    [InlineData(3725, "1:02:05")]
+    [InlineData(93600, "26:00:00")]      // over a day: hours keep counting
+    public void DurationsOverADayKeepTheirHours(double sec, string expected) =>
+        Assert.Equal(expected, Clock.FormatDuration(sec));
+
+    [Fact]
+    public void ReportShowsLongDurations()
+    {
+        var r = Sample();
+        r.DurationSec = 93600;
+        Assert.Contains("26:00:00", ReportBuilder.Build(r));
     }
 }

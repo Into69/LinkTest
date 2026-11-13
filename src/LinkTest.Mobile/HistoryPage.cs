@@ -1,4 +1,3 @@
-using System.Globalization;
 using LinkTest.Core;
 
 namespace LinkTest.Mobile;
@@ -32,30 +31,30 @@ sealed class HistoryPage : ContentPage
             _list.Add(Ui.Hint("Finished tests are saved here. Each can be shared as an HTML report (charts, tables, traceroutes) or as CSV."));
             return;
         }
-        foreach (var (path, r) in items) _list.Add(Card(path, r));
+        foreach (var item in items) _list.Add(Card(item));
     }
 
-    View Card(string path, TestRecord r)
+    View Card(SavedResult item)
     {
-        static string F(double v, string f) => double.IsFinite(v) ? v.ToString(f, CultureInfo.CurrentCulture) : "–";
+        var r = item.Summary;
         int drops = r.Tunnels.Sum(t => t.Drops);
-        var title = new Label { Text = $"{r.StartedAt:yyyy-MM-dd HH:mm} · {r.Mode} · {TimeSpan.FromSeconds(r.DurationSec):h\\:mm\\:ss}", FontAttributes = FontAttributes.Bold, FontSize = 14 };
+        var title = new Label { Text = $"{r.StartedAt:yyyy-MM-dd HH:mm} · {r.Mode} · {Clock.FormatDuration(r.DurationSec)}", FontAttributes = FontAttributes.Bold, FontSize = 14 };
         var server = new Label { Text = r.Server, FontSize = 12, TextColor = Ui.Muted };
         var figures = new Label
         {
             FontSize = 13,
-            Text = $"↑ {F(r.UpMbpsAvg, "0.0")}  ↓ {F(r.DownMbpsAvg, "0.0")} Mbps · loss {F(r.UpLossPct, "0.##")}/{F(r.DownLossPct, "0.##")}% · RTT {F(r.RttAvgMs, "0.0")} ms" +
+            Text = $"↑ {Ui.Fmt(r.UpMbpsAvg, "0.0")}  ↓ {Ui.Fmt(r.DownMbpsAvg, "0.0")} Mbps · loss {Ui.Fmt(r.UpLossPct, "0.##")}/{Ui.Fmt(r.DownLossPct, "0.##")}% · RTT {Ui.Fmt(r.RttAvgMs, "0.0")} ms" +
                    (r.BloatGrade != null ? $" · bloat {r.BloatGrade}" : "") + (r.Tunnels.Count > 0 ? $" · tunnel drops {drops}" : ""),
         };
 
-        var view = Btn("View", async () => await ViewAsync(r));
-        var share = Btn("Share report", async () => await ShareAsync(r, "html"));
-        var csv = Btn("Share CSV", async () => await ShareAsync(r, "csv"));
+        var view = Btn("View", async () => await ViewAsync(item));
+        var share = Btn("Share report", async () => await ShareAsync(item, "html"));
+        var csv = Btn("Share CSV", async () => await ShareAsync(item, "csv"));
         var del = Btn("Delete", async () =>
         {
             if (await DisplayAlertAsync("Delete result", $"Delete the test from {r.StartedAt:g}?", "Delete", "Cancel"))
             {
-                ResultStore.Delete(path);
+                ResultStore.Delete(item.Path);
                 _app.NotifyHistoryChanged();
             }
         });
@@ -71,20 +70,16 @@ sealed class HistoryPage : ContentPage
         return b;
     }
 
-    static string WriteFile(TestRecord r, string ext)
-    {
-        string dir = Path.Combine(FileSystem.CacheDirectory, "reports");
-        Directory.CreateDirectory(dir);
-        string path = Path.Combine(dir, r.SuggestedFileName(ext));
-        File.WriteAllText(path, ext == "csv" ? r.ToCsv() : ReportBuilder.Build(r));
-        return path;
-    }
+    /// <summary>Loads the full record and writes the report or CSV off the UI thread.</summary>
+    static Task<string> WriteFileAsync(SavedResult item, string ext) =>
+        Task.Run(() => ReportBuilder.WriteFile(item.Load(), Path.Combine(FileSystem.CacheDirectory, "reports"), ext));
 
-    async Task ShareAsync(TestRecord r, string ext)
+    async Task ShareAsync(SavedResult item, string ext)
     {
+        var r = item.Summary;
         try
         {
-            string path = WriteFile(r, ext);
+            string path = await WriteFileAsync(item, ext);
             await Share.Default.RequestAsync(new ShareFileRequest
             {
                 Title = $"LinkTest report {r.StartedAt:g}",
@@ -94,11 +89,11 @@ sealed class HistoryPage : ContentPage
         catch (Exception e) { await DisplayAlertAsync("Share failed", e.Message, "OK"); }
     }
 
-    async Task ViewAsync(TestRecord r)
+    async Task ViewAsync(SavedResult item)
     {
         try
         {
-            string path = WriteFile(r, "html");
+            string path = await WriteFileAsync(item, "html");
             await Launcher.Default.OpenAsync(new OpenFileRequest("LinkTest report", new ReadOnlyFile(path, "text/html")));
         }
         catch (Exception e) { await DisplayAlertAsync("Cannot open the report", e.Message + "\nUse Share report instead.", "OK"); }

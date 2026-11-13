@@ -104,13 +104,40 @@ public sealed class SampleSeries
         GapUp.Add(R(s.UpMaxGapMs)); GapDown.Add(R(s.DownMaxGapMs));
         Mos.Add(R(s.Mos));
     }
+
+    /// <summary>Independent copy (the live session keeps appending to its own).</summary>
+    public SampleSeries Clone() => new()
+    {
+        T = T.ToList(), Up = Up.ToList(), Down = Down.ToList(), Rtt = Rtt.ToList(), RttMax = RttMax.ToList(),
+        JitUp = JitUp.ToList(), JitDown = JitDown.ToList(), LossUp = LossUp.ToList(), LossDown = LossDown.ToList(),
+        GapUp = GapUp.ToList(), GapDown = GapDown.ToList(), Mos = Mos.ToList(),
+    };
 }
 
-/// <summary>Saved test results: one JSON file per test in a folder.</summary>
+/// <summary>A saved test as listed: its file and the record without the bulky parts (samples, events, traceroutes).</summary>
+public sealed record SavedResult(string Path, TestRecord Summary)
+{
+    /// <summary>Reads the full record from disk.</summary>
+    public TestRecord Load() => TestRecord.FromJson(File.ReadAllText(Path)) ?? throw new InvalidDataException("The saved result could not be read.");
+}
+
+/// <summary>
+/// Saved test results: one JSON file per test in a folder. Listing uses a small summary index
+/// (<c>.index.json</c>) so long tests don't have to be read in full; files changed or added outside the app are re-read.
+/// </summary>
 public sealed class ResultStore
 {
+    const string IndexName = ".index.json";
+
     public ResultStore(string folder) => Folder = folder;
     public string Folder { get; }
+
+    sealed class IndexEntry
+    {
+        public long Length { get; set; }
+        public long WriteTicks { get; set; }
+        public TestRecord Summary { get; set; } = new();
+    }
 
     public string Save(TestRecord r)
     {
@@ -121,16 +148,58 @@ public sealed class ResultStore
     }
 
     /// <summary>Saved tests, newest first (unreadable files are skipped).</summary>
-    public List<(string path, TestRecord record)> List()
+    public List<SavedResult> List()
     {
-        var list = new List<(string, TestRecord)>();
+        var list = new List<SavedResult>();
         if (!Directory.Exists(Folder)) return list;
+        var index = ReadIndex();
+        var fresh = new Dictionary<string, IndexEntry>(StringComparer.OrdinalIgnoreCase);
+        bool changed = false;
         foreach (var f in Directory.EnumerateFiles(Folder, "LinkTest_*.json"))
         {
-            try { if (TestRecord.FromJson(File.ReadAllText(f)) is { } r) list.Add((f, r)); }
+            try
+            {
+                var fi = new FileInfo(f);
+                if (!index.TryGetValue(fi.Name, out var e) || e.Length != fi.Length || e.WriteTicks != fi.LastWriteTimeUtc.Ticks)
+                {
+                    if (TestRecord.FromJson(File.ReadAllText(f)) is not { } r) continue;
+                    r.Samples = new SampleSeries();      // freshly read: strip it in place for the index
+                    r.Events = new List<string>();
+                    r.Traces = new List<TraceResult>();
+                    e = new IndexEntry { Length = fi.Length, WriteTicks = fi.LastWriteTimeUtc.Ticks, Summary = r };
+                    changed = true;
+                }
+                fresh[fi.Name] = e;
+                list.Add(new SavedResult(f, e.Summary));
+            }
             catch { }
         }
-        return list.OrderByDescending(x => x.Item2.StartedAt).ToList();
+        if (changed || fresh.Count != index.Count) WriteIndex(fresh);
+        return list.OrderByDescending(x => x.Summary.StartedAt).ToList();
+    }
+
+    Dictionary<string, IndexEntry> ReadIndex()
+    {
+        try
+        {
+            string p = Path.Combine(Folder, IndexName);
+            if (File.Exists(p) && JsonSerializer.Deserialize<Dictionary<string, IndexEntry>>(File.ReadAllText(p), Json.Records) is { } d)
+                return new Dictionary<string, IndexEntry>(d, StringComparer.OrdinalIgnoreCase);
+        }
+        catch { }
+        return new Dictionary<string, IndexEntry>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    void WriteIndex(Dictionary<string, IndexEntry> index)
+    {
+        try
+        {
+            string p = Path.Combine(Folder, IndexName), tmp = p + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(index, Json.Records));
+            File.Move(tmp, p, true);
+            File.SetAttributes(p, File.GetAttributes(p) | FileAttributes.Hidden);
+        }
+        catch { }
     }
 
     public static void Delete(string path) { try { File.Delete(path); } catch { } }

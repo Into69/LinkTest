@@ -10,7 +10,7 @@ sealed class HistoryForm : Form
     readonly ResultStore _store;
     readonly ListView _list = new() { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, MultiSelect = true };
     readonly Label _info = new() { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(8, 10, 8, 0) };
-    List<(string path, TestRecord record)> _items = new();
+    List<SavedResult> _items = new();
 
     public HistoryForm(ResultStore store)
     {
@@ -57,13 +57,13 @@ sealed class HistoryForm : Form
         _items = _store.List();
         _list.BeginUpdate();
         _list.Items.Clear();
-        foreach (var (_, r) in _items)
+        foreach (var r in _items.Select(i => i.Summary))
         {
             static string F(double v, string f) => double.IsFinite(v) ? v.ToString(f, CultureInfo.CurrentCulture) : "–";
             _list.Items.Add(new ListViewItem(new[]
             {
                 r.StartedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture), r.Server, r.Mode,
-                TimeSpan.FromSeconds(r.DurationSec).ToString(@"h\:mm\:ss"), F(r.UpMbpsAvg, "0.0"), F(r.DownMbpsAvg, "0.0"),
+                Clock.FormatDuration(r.DurationSec), F(r.UpMbpsAvg, "0.0"), F(r.DownMbpsAvg, "0.0"),
                 $"{F(r.UpLossPct, "0.##")} / {F(r.DownLossPct, "0.##")}", F(r.RttAvgMs, "0.0"), r.BloatGrade ?? "–", F(r.MosAvg, "0.0"),
                 r.Tunnels.Count == 0 ? "–" : r.Tunnels.Sum(t => t.Drops).ToString(CultureInfo.CurrentCulture), r.EndReason,
             }));
@@ -73,35 +73,48 @@ sealed class HistoryForm : Form
         if (_list.Items.Count > 0) _list.Items[0].Selected = true;
     }
 
-    (string path, TestRecord record)? Selected => _list.SelectedIndices.Count > 0 ? _items[_list.SelectedIndices[0]] : null;
+    SavedResult? Selected => _list.SelectedIndices.Count > 0 ? _items[_list.SelectedIndices[0]] : null;
 
     /// <summary>Writes the report to a temp file and opens it in the default browser.</summary>
-    public static void OpenReport(TestRecord r)
+    /// <returns>An error message, or null on success.</returns>
+    public static string? OpenReport(TestRecord r)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "LinkTest-reports");
-        Directory.CreateDirectory(dir);
-        string file = Path.Combine(dir, r.SuggestedFileName("html"));
-        File.WriteAllText(file, ReportBuilder.Build(r));
-        Open(file);
+        try
+        {
+            Open(ReportBuilder.WriteFile(r, Path.Combine(Path.GetTempPath(), "LinkTest-reports"), "html"));
+            return null;
+        }
+        catch (Exception e) { return e.Message; }
     }
 
     void OpenReport()
     {
-        if (Selected is { } s) OpenReport(s.record);
+        if (Selected is not { } s) return;
+        Try("open the report", () =>
+        {
+            if (OpenReport(s.Load()) is { } err) throw new IOException(err);
+        });
     }
 
     void SaveReport()
     {
         if (Selected is not { } s) return;
-        using var d = new SaveFileDialog { FileName = s.record.SuggestedFileName("html"), Filter = "HTML report (*.html)|*.html", Title = "Save report" };
-        if (d.ShowDialog(this) == DialogResult.OK) File.WriteAllText(d.FileName, ReportBuilder.Build(s.record));
+        using var d = new SaveFileDialog { FileName = s.Summary.SuggestedFileName("html"), Filter = "HTML report (*.html)|*.html", Title = "Save report" };
+        if (d.ShowDialog(this) == DialogResult.OK) Try("save the report", () => File.WriteAllText(d.FileName, ReportBuilder.Build(s.Load())));
     }
 
     void ExportCsv()
     {
         if (Selected is not { } s) return;
-        using var d = new SaveFileDialog { FileName = s.record.SuggestedFileName("csv"), Filter = "CSV (*.csv)|*.csv", Title = "Export per-second figures" };
-        if (d.ShowDialog(this) == DialogResult.OK) File.WriteAllText(d.FileName, s.record.ToCsv());
+        using var d = new SaveFileDialog { FileName = s.Summary.SuggestedFileName("csv"), Filter = "CSV (*.csv)|*.csv", Title = "Export per-second figures" };
+        if (d.ShowDialog(this) == DialogResult.OK) Try("export the CSV", () => File.WriteAllText(d.FileName, s.Load().ToCsv()));
+    }
+
+    void Try(string what, Action a)
+    {
+        try { UseWaitCursor = true; a(); }
+        catch (Exception e) { MessageBox.Show(this, $"Could not {what}:\n{e.Message}", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        finally { UseWaitCursor = false; }
     }
 
     void Delete()
@@ -109,7 +122,7 @@ sealed class HistoryForm : Form
         var sel = _list.SelectedIndices.Cast<int>().Select(i => _items[i]).ToList();
         if (sel.Count == 0) return;
         if (MessageBox.Show(this, $"Delete {sel.Count} saved test(s)?", "LinkTest", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-        foreach (var (p, _) in sel) ResultStore.Delete(p);
+        foreach (var x in sel) ResultStore.Delete(x.Path);
         Reload();
     }
 

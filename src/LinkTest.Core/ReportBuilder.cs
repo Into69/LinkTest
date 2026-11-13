@@ -14,6 +14,15 @@ public static class ReportBuilder
     static string E(string? s) => WebUtility.HtmlEncode(s ?? "");
     static string N(double v, string fmt = "0.##") => double.IsFinite(v) ? v.ToString(fmt, Inv) : "–";
 
+    /// <summary>Writes the HTML report (<paramref name="ext"/> "html") or the CSV ("csv") into a folder; returns the file path.</summary>
+    public static string WriteFile(TestRecord r, string folder, string ext)
+    {
+        Directory.CreateDirectory(folder);
+        string path = Path.Combine(folder, r.SuggestedFileName(ext));
+        File.WriteAllText(path, ext == "csv" ? r.ToCsv() : Build(r));
+        return path;
+    }
+
     public static string Build(TestRecord r)
     {
         var sb = new StringBuilder();
@@ -46,7 +55,7 @@ public static class ReportBuilder
         sb.Replace("@@TITLE@@", E($"LinkTest report {r.StartedAt.ToString("yyyy-MM-dd HH:mm", Inv)}"));
 
         sb.Append($"<h1>Link quality report</h1><div class=\"sub\">{E(r.StartedAt.ToString("dddd d MMMM yyyy, HH:mm:ss", Inv))} – {E(r.EndedAt.ToString("HH:mm:ss", Inv))}" +
-                  $" · {N(r.DurationSec, "0")} s · server {E(r.Server)} · {E(r.Mode)}</div>");
+                  $" · {Clock.FormatDuration(r.DurationSec)} · server {E(r.Server)} · {E(r.Mode)}</div>");
 
         // Key figures
         sb.Append("<div class=\"cards\">");
@@ -222,7 +231,7 @@ public static class ReportBuilder
         {
             double sec = tMax * i / 4;
             double x = L + pw * i / 4;
-            sb.Append($"<text x=\"{x:0.#}\" y=\"{H - 6}\" text-anchor=\"{(i == 0 ? "start" : i == 4 ? "end" : "middle")}\">{TimeSpan.FromSeconds(sec):h\\:mm\\:ss}</text>");
+            sb.Append($"<text x=\"{x:0.#}\" y=\"{H - 6}\" text-anchor=\"{(i == 0 ? "start" : i == 4 ? "end" : "middle")}\">{Clock.FormatDuration(sec)}</text>");
         }
         for (int si = 0; si < series.Length; si++)
         {

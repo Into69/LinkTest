@@ -287,7 +287,11 @@ sealed class MainForm : Form
         var strip = new StatusStrip();
         strip.Items.Add(_status);
         strip.Items.Add(_reportLink);
-        _reportLink.Click += (_, _) => { if (_lastRecord != null) HistoryForm.OpenReport(_lastRecord); };
+        _reportLink.Click += (_, _) =>
+        {
+            if (_lastRecord != null && HistoryForm.OpenReport(_lastRecord) is { } err)
+                MessageBox.Show(this, "Could not open the report:\n" + err, "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        };
         strip.Items.Add(BuildVersionMenu());
 
         Controls.Add(right);

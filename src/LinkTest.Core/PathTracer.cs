@@ -81,20 +81,33 @@ public static class PathTracer
         try
         {
             using var gate = new SemaphoreSlim(Math.Max(1, MaxParallelHops));
-            async Task<HopProbe> Gated(int ttl)
+            int reachedTtl = int.MaxValue;   // lowest TTL that answered from the target so far
+            async Task<HopProbe?> Gated(int ttl)
             {
                 await gate.WaitAsync(ct);
                 try
                 {
-                    if (CustomProber == null) return await ProbeHopAsync(target, ttl, probesPerHop, timeoutMs, ct);
-                    var r = await CustomProber(target, ttl, probesPerHop, timeoutMs, ct);
-                    var hop = new TraceHop(ttl, r.Address, null, r.Sent, r.Received, r.AvgRttMs, r.MaxRttMs);
-                    return new HopProbe(hop, r.ReachedTarget, r.Received == 0 ? r.Error : null);
+                    // Hops past the target add nothing; skip those not started yet (matters when few run in parallel).
+                    if (ttl > Volatile.Read(ref reachedTtl)) return null;
+                    var p = await ProbeAsync(ttl);
+                    if (p.ReachedTarget)
+                    {
+                        int cur;
+                        while (ttl < (cur = Volatile.Read(ref reachedTtl)) && Interlocked.CompareExchange(ref reachedTtl, ttl, cur) != cur) { }
+                    }
+                    return p;
                 }
                 finally { gate.Release(); }
             }
+            async Task<HopProbe> ProbeAsync(int ttl)
+            {
+                if (CustomProber == null) return await ProbeHopAsync(target, ttl, probesPerHop, timeoutMs, ct);
+                var r = await CustomProber(target, ttl, probesPerHop, timeoutMs, ct);
+                var hop = new TraceHop(ttl, r.Address, null, r.Sent, r.Received, r.AvgRttMs, r.MaxRttMs);
+                return new HopProbe(hop, r.ReachedTarget, r.Received == 0 ? r.Error : null);
+            }
             var tasks = Enumerable.Range(1, maxHops).Select(Gated).ToArray();
-            var hops = (await Task.WhenAll(tasks)).ToList();
+            var hops = (await Task.WhenAll(tasks)).TakeWhile(h => h != null).Select(h => h!).ToList();
 
             if (hops.All(h => h.Error != null))
                 return new TraceResult(at, reason, target, Array.Empty<TraceHop>(), false, "ICMP is not available on this device: " + hops[0].Error);

@@ -193,4 +193,31 @@ public class IntegrationTests
         Assert.Single(r.Hops);
         Assert.Equal(0, r.Hops[0].LossPct);
     }
+
+    [Fact]
+    public async Task Traceroute_StopsProbingPastTheTarget()
+    {
+        var oldProber = PathTracer.CustomProber;
+        int oldParallel = PathTracer.MaxParallelHops;
+        int calls = 0;
+        PathTracer.MaxParallelHops = 2;
+        PathTracer.CustomProber = (target, ttl, probes, timeout, ct) =>
+        {
+            Interlocked.Increment(ref calls);
+            bool at = ttl >= 3;    // the target is three hops away
+            return Task.FromResult(new HopProbeResult(at ? target : IPAddress.Parse($"10.0.0.{ttl}"), probes, probes, 1, 1, at, null));
+        };
+        try
+        {
+            var r = await PathTracer.TraceAsync(IPAddress.Parse("192.0.2.1"), "test", maxHops: 30, resolveNames: false);
+            Assert.True(r.ReachedTarget);
+            Assert.Equal(3, r.Hops.Count);
+            Assert.InRange(calls, 3, 4);     // at most one hop already in flight past the target
+        }
+        finally
+        {
+            PathTracer.CustomProber = oldProber;
+            PathTracer.MaxParallelHops = oldParallel;
+        }
+    }
 }

@@ -19,4 +19,9 @@ public static class Clock
         if (!OperatingSystem.IsWindows()) return;
         try { timeBeginPeriod(1); } catch { /* best effort */ }
     }
+
+    /// <summary>Elapsed time as h:mm:ss with total hours (26:00:00, not "2:00:00" for a day and two hours).</summary>
+    public static string FormatDuration(double seconds) => FormatDuration(TimeSpan.FromSeconds(Math.Max(0, seconds)));
+
+    public static string FormatDuration(TimeSpan t) => $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}";
 }

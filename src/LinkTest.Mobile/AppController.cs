@@ -146,6 +146,8 @@ sealed class AppController
         Connecting = false;
         if (st.KeepScreenOn) DeviceDisplay.Current.KeepScreenOn = true;
         if (st.KeepRunningInBackground) await StartServiceAsync(session);
+        // The test may have ended while the permission prompt was open.
+        if (Session != session || !session.IsRunning) return null;
         _timer ??= CreateTimer();
         _timer.Start();
         SetStatus($"Running · {session.Config}");
@@ -216,6 +218,8 @@ sealed class AppController
             // Android 13+: the ongoing notification needs permission (the service still runs if refused).
             if (OperatingSystem.IsAndroidVersionAtLeast(33))
                 await Permissions.RequestAsync<Permissions.PostNotifications>();
+            // Don't start (and hold wake/Wi-Fi locks) if the test ended while the prompt was open.
+            if (Session != session || !session.IsRunning) return;
             TestService.Control.Start($"Testing {Settings.Host} · {session.Config}");
             _serviceRunning = true;
         }

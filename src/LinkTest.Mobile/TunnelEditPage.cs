@@ -54,7 +54,18 @@ sealed class TunnelEditPage : ContentPage
         form.Add(_detect);
 
         var save = new Button { Text = "Save", BackgroundColor = Ui.Accent, TextColor = Colors.White, Margin = new Thickness(0, 16, 0, 0) };
-        save.Clicked += async (_, _) => { Apply(); _onSave(_p); await Navigation.PopAsync(); };
+        save.Clicked += async (_, _) =>
+        {
+            var bad = Fields.Where(f => !TryParse(_num[f.key].Text, out _)).Select(f => f.label).ToList();
+            if (bad.Count > 0)
+            {
+                await DisplayAlertAsync("Check the values", "These aren't numbers:\n" + string.Join("\n", bad), "OK");
+                return;
+            }
+            Apply();
+            _onSave(_p);
+            await Navigation.PopAsync();
+        };
         var defaults = new Button { Text = "Restore preset values", Margin = new Thickness(0, 8, 0, 0) };
         defaults.Clicked += (_, _) =>
         {
@@ -78,7 +89,18 @@ sealed class TunnelEditPage : ContentPage
     string Get(string key, TunnelProfile? p = null)
     {
         var v = typeof(TunnelProfile).GetProperty(key)!.GetValue(p ?? _p)!;
-        return Convert.ToString(v, CultureInfo.CurrentCulture)!;
+        // Invariant: numeric keypads usually only offer ".", whatever the phone's language.
+        return Convert.ToString(v, CultureInfo.InvariantCulture)!;
+    }
+
+    /// <summary>Accepts "1.5" and "1,5" (no thousands separators in these fields).</summary>
+    static bool TryParse(string? text, out double d) =>
+        double.TryParse((text ?? "").Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out d) && double.IsFinite(d);
+
+    static void Set(TunnelProfile p, string key, double d)
+    {
+        var prop = typeof(TunnelProfile).GetProperty(key)!;
+        prop.SetValue(p, prop.PropertyType == typeof(int) ? (object)(int)Math.Round(d) : d);
     }
 
     void Apply()
@@ -86,11 +108,7 @@ sealed class TunnelEditPage : ContentPage
         _p.Name = string.IsNullOrWhiteSpace(_name.Text) ? _p.Name : _name.Text.Trim();
         _p.Transport = _transport.SelectedIndex == 1 ? TunnelTransport.Tcp : TunnelTransport.Udp;
         foreach (var (key, _, _) in Fields)
-        {
-            var prop = typeof(TunnelProfile).GetProperty(key)!;
-            if (!double.TryParse(_num[key].Text, NumberStyles.Float, CultureInfo.CurrentCulture, out var d)) continue;
-            prop.SetValue(_p, prop.PropertyType == typeof(int) ? (object)(int)Math.Round(d) : d);
-        }
+            if (TryParse(_num[key].Text, out var d)) Set(_p, key, d);
         _p.Normalize();
     }
 
@@ -98,11 +116,7 @@ sealed class TunnelEditPage : ContentPage
     {
         var copy = _p.Clone();
         foreach (var (key, _, _) in Fields)
-        {
-            var prop = typeof(TunnelProfile).GetProperty(key)!;
-            if (double.TryParse(_num[key].Text, NumberStyles.Float, CultureInfo.CurrentCulture, out var d))
-                prop.SetValue(copy, prop.PropertyType == typeof(int) ? (object)(int)Math.Round(d) : d);
-        }
+            if (TryParse(_num[key].Text, out var d)) Set(copy, key, d);
         copy.Normalize();
         _detect.Text = $"With these timers a dead link is detected after about {copy.DetectionSec:0.#} s (plus up to one keepalive interval).";
     }

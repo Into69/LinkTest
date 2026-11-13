@@ -806,7 +806,7 @@ public sealed class ClientSession : IDisposable
             UpMbpsAvg = upBytes * 8 / dur / 1e6,
             DownMbpsAvg = dnBytes * 8 / downDur / 1e6,
             UpLossPct = upExp > 0 ? 100.0 * upLost / upExp : double.NaN,
-            DownLossPct = dnExp > 0 ? 100.0 * dnLost / dnExp : 0,
+            DownLossPct = dnExp > 0 ? 100.0 * dnLost / dnExp : double.NaN,   // nothing received: not measured
             RttAvgMs = rt.Samples > 0 ? rt.AvgUs / 1000 : double.NaN,
             RttMinMs = rt.Samples > 0 ? rt.MinUs / 1000 : double.NaN,
             RttMaxMs = rt.Samples > 0 ? rt.MaxUs / 1000 : double.NaN,
@@ -824,7 +824,7 @@ public sealed class ClientSession : IDisposable
         };
         lock (_series)
         {
-            record.Samples = _series;
+            record.Samples = _series.Clone();
             record.MaxGapMs = _maxGap;
             record.MosAvg = _mosCount > 0 ? _mosSum / _mosCount : double.NaN;
         }
