@@ -47,7 +47,7 @@ sealed class ServerForm : Form
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Text = "LinkTest Server";
+        Text = $"LinkTest Server v{Updater.CurrentVersion}";
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? Application.ExecutablePath); } catch { }
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(1100, 720);

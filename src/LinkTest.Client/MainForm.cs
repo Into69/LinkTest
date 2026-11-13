@@ -75,7 +75,7 @@ sealed class MainForm : Form
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96f, 96f);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Text = "LinkTest Client - link quality & tunnel stability";
+        Text = $"LinkTest Client v{Updater.CurrentVersion} - link quality & tunnel stability";
         Icon = AppIcon;
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(1400, 880);
