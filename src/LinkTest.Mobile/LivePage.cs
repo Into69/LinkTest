@@ -111,7 +111,7 @@ sealed class LivePage : ContentPage
             _bloat.Set(s.BloatGrade, $"+{s.BloatIncreaseMs:0.0} ms under load", s.BloatGrade is "A+" or "A" ? Ui.Good : s.BloatGrade is "B" or "C" ? Ui.Warn : Ui.Bad);
         else _bloat.Set("–", cfg?.BaselineSec == 0 ? "off / server < 1.6" : "measuring…");
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
-        _time.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", cfg?.DurationSec > 0 ? $"of {cfg.DurationSec} s" : "until stopped");
+        _time.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", cfg?.DurationSec > 0 ? $"of {cfg.DurationSec} s" : "");
 
         _tput.Push(s.UpMbps, s.DownMbps);
         _lat.Push(s.RttMs, s.UpJitterMs, s.DownJitterMs);

@@ -796,7 +796,7 @@ sealed class MainForm : Form
                 s.BloatGrade is "A+" or "A" ? Color.ForestGreen : s.BloatGrade is "B" or "C" ? Color.DarkOrange : Color.Firebrick);
         else _tBloat.Set("–", session.Config.BaselineSec == 0 ? "baseline off / server < 1.6" : session.Config.UpMbps + session.Config.DownMbps > 0 ? "measuring under load…" : "no load");
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
-        _tTime.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", session.Config.DurationSec > 0 ? $"of {session.Config.DurationSec} s" : "until stopped");
+        _tTime.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", session.Config.DurationSec > 0 ? $"of {session.Config.DurationSec} s" : "");
 
         _chartTput.Push(s.UpMbps, s.DownMbps, s.TxMbps);
         _chartLat.Push(s.RttMs, s.RttMaxMs, s.UpJitterMs, s.DownJitterMs, s.RttTcpMs);

@@ -2,6 +2,18 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.10.0]
+
+### New
+- **Android Auto (basic).** LinkTest shows on the car screen with the live figures of the current test
+  (status and server, throughput, loss, latency and jitter, MOS and bufferbloat, elapsed time) and a Start / Stop
+  button. The test uses the settings from the phone app and runs exactly as when started on the phone.
+  LinkTest isn't installed from Google Play, so Android Auto only lists it once *Unknown sources* is enabled in
+  Android Auto's developer settings.
+
+### Changed
+- The elapsed-time tile no longer says "until stopped" for tests without a set duration.
+
 ## [1.9.0]
 
 ### New
