@@ -213,7 +213,7 @@ sealed class AppController
 
         Session = session;
         Connecting = false;
-        if (st.KeepScreenOn) DeviceDisplay.Current.KeepScreenOn = true;
+        if (st.KeepScreenOn) SetKeepScreenOn(true);
         // Always: the foreground service (wake lock, Wi-Fi locks, notification) keeps the test running with the
         // screen off, the phone asleep or another app in front.
         StartService(session);
@@ -226,9 +226,16 @@ sealed class AppController
         return null;
     }
 
+    /// <summary>Needs the phone app's activity: a test started from Android Auto may have none, which is fine.</summary>
+    static void SetKeepScreenOn(bool on)
+    {
+        try { DeviceDisplay.Current.KeepScreenOn = on; } catch { }
+    }
+
     IDispatcherTimer CreateTimer()
     {
-        var t = Application.Current!.Dispatcher.CreateTimer();
+        // Started from Android Auto the phone app may have no window yet: fall back to the main-thread dispatcher.
+        var t = (Application.Current?.Dispatcher ?? Dispatcher.GetForCurrentThread()!).CreateTimer();
         t.Interval = TimeSpan.FromSeconds(1);
         t.Tick += (_, _) => Tick();
         return t;
@@ -311,7 +318,7 @@ sealed class AppController
         }
         session.Dispose();
         Session = null;
-        DeviceDisplay.Current.KeepScreenOn = false;
+        SetKeepScreenOn(false);
         StopService();
         SetStatus("Idle - " + reason);
         ContinueComparison(session.Record, reason);

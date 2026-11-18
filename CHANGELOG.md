@@ -2,6 +2,12 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.10.1]
+
+### Fixed
+- Android Auto: Start on the car screen failed with "current Activity can not be detected" when *Keep screen on*
+  was enabled and the phone app wasn't open.
+
 ## [1.10.0]
 
 ### New
