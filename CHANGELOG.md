@@ -2,6 +2,44 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.11.0]
+
+### New
+- **Browser tests: run a test from any web browser, no app needed.** The server can serve a web page.
+  Turn it on with `--web` on the console server, or *Browser tests* in the server GUI, then open
+  `http://<server>:7448/`. HTTPS is optional (`--web-https`, port 7449, the server's self-signed certificate).
+  - **Speed test (the default)** finds the maximum download and upload, like a classic speed test. It measures
+    idle latency, then 10 s of download and 10 s of upload over 6 TCP connections. The ramp-up seconds are
+    left out of the result, and latency is measured during each phase: the bufferbloat. The result shows
+    the average and peak of each direction, and the PDF / HTML reports have a speed test layout.
+  - **High-latency links** (satellite, 700 ms+) are allowed for:
+    - The page measures the round-trip time before a test.
+    - On a slow link the speed test leaves out more TCP ramp-up (about 7 s at 700 ms). It lengthens each phase
+      so that at least 6 seconds are measured.
+    - UDP-style tests leave out a warm-up while WebRTC's congestion window opens.
+    - The server waits as long as needed for the browser's figures, up to 20 s when the link's queue fills.
+  - **UDP-style traffic** runs over a WebRTC data channel set to unreliable and unordered. It measures real
+    loss, jitter and gaps, up to 25 Mbps each way. **TCP** runs over WebSockets with 1-8 connections.
+    **Mixed** runs both at once.
+  - **Patterns and presets:** constant, bursty, VoIP and video patterns, with presets for steady TCP load, a
+    video call, a VoIP call, gaming and mixed traffic.
+  - **Measurements:** live tiles and charts with the same ⓘ explanations as the apps, an idle baseline for
+    bufferbloat, and an estimated MOS. Optional location sharing (HTTPS page).
+  - **Results:** saved on the server (`%LOCALAPPDATA%\LinkTest\web-results`, or `--web-results`), and
+    available from the page as HTML and PDF reports and CSV.
+  - **Server integration:** the server key applies to browser tests and their results. Browser tests show in
+    the sessions list (version "web") and count towards the session limit. The GUI's firewall button also
+    opens the browser test ports.
+  - **Not in a browser:** DSCP marking, tunnel simulation, path MTU, traceroute, the capacity test and the
+    IPv4 vs IPv6 comparison still need the apps.
+
+### Changed
+- High-latency links: the apps no longer mark the upload figure "no report" on links with a long round-trip
+  time. The limit is now 1.5 s or the round-trip time + 0.5 s, whichever is longer.
+- Two tests saved in the same second no longer overwrite each other: the second file gets a `_2` suffix.
+- The server downloads are about 16 MB larger because they now include the web server and WebRTC library.
+  Their licences are in THIRD-PARTY-NOTICES.txt.
+
 ## [1.10.2]
 
 ### Removed

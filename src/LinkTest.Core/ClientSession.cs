@@ -1228,7 +1228,9 @@ public sealed class ClientSession : IDisposable
                     _hasPrevPeer = true;
                     s.UpStale = false;
                 }
-                if (s.UpAgeSec > 1.5) s.UpStale = true;
+                // Reports come every 100 ms but take half an RTT to arrive: on high-latency links (satellite: 600 ms+,
+                // seconds when the queue fills) allow for that before calling the report stale.
+                if (s.UpAgeSec > Math.Max(1.5, _e.SmoothedRttUs / 1e6 + 0.5)) s.UpStale = true;
             }
 
             _prevLocal = local;

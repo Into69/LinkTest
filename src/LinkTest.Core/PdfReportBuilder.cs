@@ -100,7 +100,10 @@ public static class PdfReportBuilder
         var judged = classes.Where(a => a.Verdict is TrafficVerdict.Good or TrafficVerdict.Marginal or TrafficVerdict.Poor).ToList();
         var worst = judged.Count == 0 ? TrafficVerdict.NoData : judged.Max(a => a.Verdict);
         var (vc, vbg) = Colors(worst);
-        var headline = PdfText.Wrap(TrafficAssessment.Headline(classes), W - 30, 12.5, true);
+        var headline = PdfText.Wrap(r.Speed is { } spd
+            ? $"Download {N(spd.DownMbps, "0.0")} Mbps · upload {N(spd.UpMbps, "0.0")} Mbps · latency {N(spd.IdleRttMs, "0")} ms idle, " +
+              $"{N(spd.DownLoadedRttMs, "0")} / {N(spd.UpLoadedRttMs, "0")} ms loaded"
+            : TrafficAssessment.Headline(classes), W - 30, 12.5, true);
         var tunnelsLine = r.Tunnels.Count == 0 ? null
             : r.Tunnels.All(t => t.Drops == 0) ? $"All {r.Tunnels.Count} simulated VPN tunnel{(r.Tunnels.Count == 1 ? "" : "s")} stayed up for the whole test."
             : $"{r.Tunnels.Count(t => t.Drops > 0)} of {r.Tunnels.Count} simulated VPN tunnels dropped at least once ({r.Tunnels.Sum(t => t.Drops)} drops in total).";
@@ -110,7 +113,7 @@ public static class PdfReportBuilder
         double y = f.Y + 22;
         foreach (var l in headline) { f.Page.Text(M + 16, y, l, 12.5, true, vc); y += 16; }
         if (tunnelsLine != null) { f.Page.Text(M + 16, y + 1, tunnelsLine, 9.5, false, Text); y += 15; }
-        f.Page.Text(M + 16, y + 1, $"Server {r.Server} · {r.Mode} · {N(r.Config.UpMbps, "0.###")} Mbps up / {N(r.Config.DownMbps, "0.###")} Mbps down · ended: {r.EndReason}", 8.5, false, Muted);
+        f.Page.Text(M + 16, y + 1, $"Server {r.Server} · {r.Mode} · {(r.Speed is { } sp ? "download " + N(sp.DownMbps, "0.0") + " / upload " + N(sp.UpMbps, "0.0") + " Mbps" : r.TrafficText)} · ended: {r.EndReason}", 8.5, false, Muted);
         f.Y += boxH + 18;
 
         // ---- Scorecard
@@ -299,7 +302,7 @@ public static class PdfReportBuilder
         {
             ("Server", r.Server + (r.ServerVersion != null ? $" (LinkTest {r.ServerVersion})" : "")),
             ("Client", "LinkTest " + r.AppVersion + (r.Connection?.PublicInfo?.Summary is { } pub ? " · " + pub : "")),
-            ("Traffic", $"{r.Mode}, {N(r.Config.UpMbps, "0.###")} Mbps up / {N(r.Config.DownMbps, "0.###")} Mbps down, {r.Config.Profile} profile, {r.Config.PacketSize} B packets"),
+            ("Traffic", r.Speed != null ? $"{r.Mode}: {r.TrafficText}" : $"{r.Mode}, {r.TrafficText}, {r.Config.Profile} profile, {r.Config.PacketSize} B packets"),
             ("Started / ended", $"{r.StartedAt:yyyy-MM-dd HH:mm:ss} / {r.EndedAt:HH:mm:ss} ({r.EndReason})"),
             ("Idle baseline", r.Config.BaselineSec > 0 ? $"{r.Config.BaselineSec} s, bufferbloat grade {r.BloatGrade ?? "–"}" : "off"),
         };

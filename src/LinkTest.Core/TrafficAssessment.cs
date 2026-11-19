@@ -113,7 +113,8 @@ public static class TrafficAssessment
             var req = TrafficRequirement.For(def, r.Config.DscpSimulate);
             var sum = i < r.Classes.Count ? r.Classes[i] : null;
             var ser = i < r.ClassSeries.Count ? r.ClassSeries[i] : null;
-            double tUp = r.Config.UpMbps * def.SharePct / 100, tDown = r.Config.DownMbps * def.SharePct / 100;
+            // A speed test has no target rate: it measures the most the link carries.
+            double tUp = r.Speed != null ? 0 : r.Config.UpMbps * def.SharePct / 100, tDown = r.Speed != null ? 0 : r.Config.DownMbps * def.SharePct / 100;
             bool udp = def.Transport == TransportKind.Udp;
 
             // Whole-test averages from the series (after the idle baseline), falling back to the saved summary.

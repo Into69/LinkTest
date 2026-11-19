@@ -90,6 +90,58 @@ netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow prot
 
 **CLI**: `LinkTestCli.exe server.example.com --udp --up 20 --down 50 --profile voip --time 0 --tunnels all --csv log.csv`
 
+### Browser tests
+
+The server can also serve a web page that runs tests from any modern browser, with no app to install.
+
+- **Console server:** run `LinkTestServer.exe --web`. Add `--web-https` to also serve the page over HTTPS
+  with the server's self-signed certificate.
+- **GUI server:** tick *Browser tests* and, if wanted, *Also HTTPS*.
+
+Then open `http://<server>:7448/`. With HTTPS, use port 7449; browsers warn once about the certificate.
+
+What runs in the browser:
+
+- **Speed test** is the default. It finds the maximum download and upload:
+  - first the idle latency, then the download and then the upload, each as fast as possible over several
+    TCP connections (10 s each over 6 connections by default);
+  - the first seconds of each phase (TCP ramp-up) are left out of the result;
+  - latency is measured while downloading and while uploading, which shows the bufferbloat in each
+    direction;
+  - the result is capped at the server's *Max Mbps per direction*;
+  - on high-latency links (satellite, 700 ms+) TCP needs several seconds to reach full speed: the page
+    measures the round-trip time first and leaves out more ramp-up (about 7 s at 700 ms). Each phase is
+    lengthened so that at least 6 seconds are measured.
+- **UDP-style traffic** uses a WebRTC data channel set to unreliable and unordered, so it measures real UDP
+  packets with real loss, jitter and gaps. It is limited to 25 Mbps per direction, because browsers' WebRTC
+  stops behaving like plain UDP above that.
+- **TCP traffic** uses WebSockets, with 1-8 connections. It measures throughput and round-trip time.
+- **Mixed** runs both at once.
+- The four traffic patterns are constant, bursty, VoIP and video. Presets cover steady TCP load, a video
+  call, a VoIP call, gaming, and mixed traffic.
+- Bufferbloat is measured from an idle baseline, MOS is estimated, and live charts are shown. Every figure
+  has the same ⓘ explanation as in the apps.
+- The page can record the browser's location with the test. Browsers only allow this on HTTPS pages.
+
+Results are saved on the server, by default in `%LOCALAPPDATA%\LinkTest\web-results`; `--web-results`
+changes the folder. Each result can be opened as an HTML report, or downloaded as a PDF report or CSV,
+from the page.
+
+The server's key applies to browser tests and to the saved results. Browser tests count towards
+*Max concurrent tests*, and they appear in the server's sessions list with version "web".
+
+Browsers can't do some of what the apps do:
+
+- DSCP marking and the DSCP mix
+- VPN tunnel simulation
+- path MTU and traceroute
+- the capacity test
+- IPv4 vs IPv6 comparison
+- TCP retransmit counts
+
+Firewall: allow TCP 7448 (and 7449 for HTTPS) and UDP 7448. The GUI's *Add firewall rules* button does
+this when browser tests are enabled.
+
 ## Diagnostics
 
 - **Path MTU:** when a test starts, the client finds the largest packet that gets through unfragmented in
@@ -236,5 +288,8 @@ vendor-specific behaviour such as on-demand DPD being suppressed by data traffic
 
 - The server sends UDP only to the IP address that owns the session's TCP control connection, so it cannot
   be used to reflect traffic at third parties.
+- Browser tests (`--web`) are off by default. The page and its results are public unless a key is set, so
+  set `--key` before enabling them on a server that others can reach. Over plain HTTP the key is sent
+  unencrypted; use the HTTPS page to protect it.
 - Use `--key` and `--max-mbps` on servers reachable from the internet. Traffic is not encrypted, but it
   contains nothing except test data and statistics.

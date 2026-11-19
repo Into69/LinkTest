@@ -6,6 +6,7 @@
     <Project Path="src/LinkTest.Mobile/LinkTest.Mobile.csproj" />
     <Project Path="src/LinkTest.Server/LinkTest.Server.csproj" />
     <Project Path="src/LinkTest.ServerGui/LinkTest.ServerGui.csproj" />
+    <Project Path="src/LinkTest.Web/LinkTest.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/LinkTest.Tests/LinkTest.Tests.csproj" />

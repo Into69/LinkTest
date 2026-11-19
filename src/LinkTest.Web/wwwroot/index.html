@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinkTest browser test</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LinkTest</span><small>browser test</small></div>
+  <div class="bar-right"><span id="security" class="badge"></span><span id="version" class="muted"></span></div>
+</header>
+
+<main>
+  <section class="card" id="setup">
+    <div class="card-head">
+      <h2>Test settings</h2>
+      <div class="presets" id="presets" role="group" aria-label="Presets"></div>
+    </div>
+    <div class="grid form">
+      <label>Traffic type
+        <select id="protocol">
+          <option value="speed">Speed test (max down &amp; up)</option>
+          <option value="udp">UDP-style (WebRTC)</option>
+          <option value="tcp">TCP (WebSocket)</option>
+          <option value="mixed">Mixed UDP + TCP</option>
+        </select>
+      </label>
+      <label data-for="rates">Pattern
+        <select id="profile">
+          <option value="constant">Constant</option>
+          <option value="bursty">Bursty (on / off)</option>
+          <option value="voip">VoIP calls (G.711, 20 ms)</option>
+          <option value="video">Video (30 fps, I-frames)</option>
+        </select>
+      </label>
+      <label data-for="speed">Download time (s)<input id="downSec" type="number" min="4" max="60" step="1"></label>
+      <label data-for="speed">Upload time (s)<input id="upSec" type="number" min="4" max="60" step="1"></label>
+      <label data-for="rates">Upload (Mbps)<input id="upMbps" type="number" min="0" step="any" inputmode="decimal"></label>
+      <label data-for="rates">Download (Mbps)<input id="downMbps" type="number" min="0" step="any" inputmode="decimal"></label>
+      <label data-for="rates">Duration (s, 0 = until stopped)<input id="durationSec" type="number" min="0" step="1"></label>
+      <label>Idle baseline (s)<input id="baselineSec" type="number" min="0" max="30" step="1"></label>
+      <label data-for="udp">Packet size (bytes)<input id="packetSize" type="number" min="64" max="1200" step="1"></label>
+      <label data-for="tcp">TCP connections<input id="streams" type="number" min="1" max="8" step="1"></label>
+      <label data-for="mixed">UDP share (%)<input id="udpSharePct" type="number" min="0" max="100" step="1"></label>
+      <label data-for="bursty">Burst on / off (ms)<span class="pair"><input id="burstOnMs" type="number" min="10" step="10"><input id="burstOffMs" type="number" min="0" step="10"></span></label>
+      <label id="keyRow" hidden>Server key<input id="key" type="password" autocomplete="off"></label>
+      <label class="check"><input id="shareLocation" type="checkbox"> Record my location with the test</label>
+    </div>
+    <p class="hint" id="presetHint"></p>
+    <div class="actions">
+      <button id="start" class="primary" type="button">Start test</button>
+      <span id="status" class="status" role="status" aria-live="polite">Connecting…</span>
+    </div>
+  </section>
+
+  <section class="tiles" id="tiles" aria-label="Live results"></section>
+
+  <section class="charts">
+    <div class="card chart"><div class="chart-head"><h3>Throughput (Mbps)</h3><button class="info" data-help="chart.throughput" aria-label="About this chart">i</button></div><canvas id="chartTput" height="180"></canvas></div>
+    <div class="card chart"><div class="chart-head"><h3>Latency (ms)</h3><button class="info" data-help="chart.latency" aria-label="About this chart">i</button></div><canvas id="chartLat" height="180"></canvas></div>
+    <div class="card chart" id="lossCard"><div class="chart-head"><h3>Packet loss (%)</h3><button class="info" data-help="chart.loss" aria-label="About this chart">i</button></div><canvas id="chartLoss" height="180"></canvas></div>
+  </section>
+
+  <section class="card" id="result" hidden>
+    <h2>Result</h2>
+    <div id="speedResult" class="speed-result" hidden>
+      <div><span class="label">Download</span><span class="big" id="srDown">–</span><span class="unit">Mbps</span></div>
+      <div><span class="label">Upload</span><span class="big" id="srUp">–</span><span class="unit">Mbps</span></div>
+      <div><span class="label">Latency</span><span class="lat" id="srLat"></span></div>
+    </div>
+    <p id="resultSummary"></p>
+    <div class="actions" id="resultLinks"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Saved browser tests</h2><button id="refresh" type="button">Refresh</button></div>
+    <div class="table-wrap"><table id="history"><thead><tr>
+      <th>Started</th><th>Client</th><th>Mode</th><th class="num">Up</th><th class="num">Down</th><th class="num">Loss ↑/↓ %</th><th class="num">RTT ms</th><th class="num">MOS</th><th>Bloat</th><th>Reports</th>
+    </tr></thead><tbody></tbody></table></div>
+    <p class="hint" id="historyHint"></p>
+  </section>
+
+  <section class="card notes">
+    <h2>About the browser test</h2>
+    <ul>
+      <li><b>Speed test</b> finds the most this link carries: it measures the idle latency, then downloads as fast as possible over several TCP connections, then uploads. The first seconds of each phase (TCP ramp-up) are left out of the result. Latency is measured all along: how much it rises while downloading or uploading is the bufferbloat. The result is capped at the server's limit per direction.</li>
+      <li><b>UDP-style traffic</b> runs over a WebRTC data channel set to unreliable and unordered: real UDP packets, real loss and jitter. WebRTC adds congestion control, so when the link is overloaded you may see lower throughput rather than heavy loss. Browsers handle up to <span id="maxUdp">25</span> Mbps each way this way; for higher rates use TCP (a mixed test sends the rest as TCP). The server needs UDP <span class="port" id="udpPort"></span> reachable.</li>
+      <li><b>TCP</b> runs over WebSockets: throughput and round-trip time; TCP hides packet loss by retransmitting, so loss isn't measured.</li>
+      <li>Keep this tab in the foreground during a test: browsers slow down background tabs, which would show up as gaps and lower upload rates.</li>
+      <li>Location sharing needs the HTTPS page (browsers only allow it there)<span id="httpsLink"></span>.</li>
+      <li>Not available in a browser — use the LinkTest apps for these: DSCP marking and the DSCP traffic mix, VPN tunnel simulation, path MTU, traceroute, the capacity test, IPv4 vs IPv6 comparison and TCP retransmit counts.</li>
+    </ul>
+  </section>
+</main>
+
+<dialog id="helpDialog">
+  <form method="dialog">
+    <h3 id="helpTitle"></h3>
+    <p id="helpWhat"></p>
+    <p id="helpIdeal"></p>
+    <ul id="helpRanges"></ul>
+    <div class="actions"><button class="primary" value="close">Close</button></div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

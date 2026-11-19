@@ -53,6 +53,8 @@ public static class StatHelp
     }
 
     public static StatInfo? Get(string key) => Items.TryGetValue(key, out var i) ? i : null;
+    /// <summary>Every entry by key (the web page loads them all).</summary>
+    public static IReadOnlyDictionary<string, StatInfo> All => Items;
 
     /// <summary>Help for a row of the Statistics table (by its row name).</summary>
     public static StatInfo? Detail(string rowName) => Get("detail." + rowName);

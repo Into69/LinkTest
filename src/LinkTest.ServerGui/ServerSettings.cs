@@ -1,5 +1,6 @@
 using System.Text.Json;
 using LinkTest.Core;
+using LinkTest.Server;
 
 namespace LinkTest.ServerGui;
 
@@ -17,6 +18,11 @@ sealed class ServerSettings
     public bool RequireTls { get; set; }
     public bool CheckForUpdates { get; set; } = true;
     public bool AutoInstallUpdates { get; set; }
+    /// <summary>Browser tests: web page + WebRTC on <see cref="WebPort"/> (TCP + UDP).</summary>
+    public bool WebEnabled { get; set; }
+    public int WebPort { get; set; } = ServerOptions.DefaultWebPort;
+    /// <summary>Also serve the page over HTTPS on <see cref="WebPort"/> + 1.</summary>
+    public bool WebHttps { get; set; }
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinkTest", "server-settings.json");
 

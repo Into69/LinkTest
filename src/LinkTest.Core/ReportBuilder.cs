@@ -104,8 +104,19 @@ public static class ReportBuilder
 
         // Key figures
         sb.Append("<div class=\"cards\">");
-        Card(sb, "Upload (avg)", $"{N(r.UpMbpsAvg)} Mbps", $"target {N(r.Config.UpMbps)} Mbps");
-        Card(sb, "Download (avg)", $"{N(r.DownMbpsAvg)} Mbps", $"target {N(r.Config.DownMbps)} Mbps");
+        if (r.Speed is { } sp)
+        {
+            Card(sb, "Download", $"{N(sp.DownMbps)} Mbps", $"peak {N(sp.DownPeakMbps)} Mbps · {sp.DownSec} s");
+            Card(sb, "Upload", $"{N(sp.UpMbps)} Mbps", $"peak {N(sp.UpPeakMbps)} Mbps · {sp.UpSec} s");
+            Card(sb, "Latency idle", $"{N(sp.IdleRttMs, "0.0")} ms", $"jitter {N(sp.IdleJitterMs, "0.0")} ms", Level(sp.IdleRttMs, 100, 250));
+            Card(sb, "Latency downloading / uploading", $"{N(sp.DownLoadedRttMs, "0.0")} / {N(sp.UpLoadedRttMs, "0.0")} ms", "round-trip time under load",
+                Level(Math.Max(Z(sp.DownLoadedRttMs), Z(sp.UpLoadedRttMs)), 100, 250));
+        }
+        else
+        {
+            Card(sb, "Upload (avg)", $"{N(r.UpMbpsAvg)} Mbps", $"target {N(r.Config.UpMbps)} Mbps");
+            Card(sb, "Download (avg)", $"{N(r.DownMbpsAvg)} Mbps", $"target {N(r.Config.DownMbps)} Mbps");
+        }
         Card(sb, "Packet loss ↑ / ↓", $"{N(r.UpLossPct)} / {N(r.DownLossPct)} %", "UDP traffic", Level(Math.Max(Z(r.UpLossPct), Z(r.DownLossPct)), 0.5, 3));
         Card(sb, "Round-trip time", $"{N(r.RttAvgMs, "0.0")} ms", $"min {N(r.RttMinMs, "0.0")} / max {N(r.RttMaxMs, "0.0")}", Level(r.RttAvgMs, 100, 250));
         Card(sb, "Jitter ↑ / ↓", $"{N(r.JitterUpMs, "0.0")} / {N(r.JitterDownMs, "0.0")} ms", "", Level(Math.Max(Z(r.JitterUpMs), Z(r.JitterDownMs)), 10, 30));
@@ -173,7 +184,8 @@ public static class ReportBuilder
         if (double.IsFinite(r.CapacityUpMbps) || double.IsFinite(r.CapacityDownMbps))
             Row(sb, "Capacity test", $"found up {CapText(r.CapacityUpMbps, r.CapacityUpAtLimit)}, down {CapText(r.CapacityDownMbps, r.CapacityDownAtLimit)}; " +
                                      $"tested at {N(r.Config.UpMbps)} / {N(r.Config.DownMbps)} Mbps after a {N(r.WarmupSec, "0")} s ramp-up (left out of the judgement)");
-        Row(sb, "Configured rates", $"up {N(r.Config.UpMbps)} Mbps, down {N(r.Config.DownMbps)} Mbps");
+        if (r.Speed is { } spd) Row(sb, "Speed test", r.TrafficText + $"; the first {spd.RampSec} s of each phase (TCP ramp-up) are left out of the rates");
+        else Row(sb, "Configured rates", $"up {N(r.Config.UpMbps)} Mbps, down {N(r.Config.DownMbps)} Mbps");
         if (!r.Config.DscpSimulate) Row(sb, "Traffic profile", $"{r.Config.Profile}, {r.Config.PacketSize} B packets" + (r.Config.Protocol != TransportKind.Udp ? $", {r.Config.Streams} TCP stream(s)" : ""));
         Row(sb, "DSCP", r.Config.DscpSimulate ? "Simulate (per-class marking)" : r.Config.Dscp > 0 ? DscpNames.Name(r.Config.Dscp) : "none");
         Row(sb, "Idle baseline", r.Config.BaselineSec > 0 ? $"{r.Config.BaselineSec} s (included in averages)" : "off");

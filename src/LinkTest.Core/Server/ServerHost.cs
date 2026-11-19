@@ -26,7 +26,16 @@ public sealed class ServerHost
     public string? CertificateFingerprint { get; private set; }
 
     public ServerOptions Options => _opts;
-    public int SessionCount => _sessions.Count;
+    /// <summary>Running tests: LinkTest clients plus any other source (browser tests).</summary>
+    public int SessionCount => _sessions.Count + ExternalSessions().Count;
+
+    readonly List<Func<IReadOnlyList<SessionSnapshot>>> _externalSources = new();
+    /// <summary>Adds sessions that aren't LinkTest client sessions (browser tests) to the list and the session limit.</summary>
+    public void AddSessionSource(Func<IReadOnlyList<SessionSnapshot>> source) { lock (_externalSources) _externalSources.Add(source); }
+    List<SessionSnapshot> ExternalSessions()
+    {
+        lock (_externalSources) return _externalSources.SelectMany(s => { try { return s(); } catch { return Array.Empty<SessionSnapshot>(); } }).ToList();
+    }
     public Socket UdpSocket => _udp;
     /// <summary>Print per-session statistics to the log every 5 s.</summary>
     public bool PeriodicStatus { get; set; } = true;
@@ -43,7 +52,8 @@ public sealed class ServerHost
         LogMessage?.Invoke(line);
     }
 
-    public IReadOnlyList<SessionSnapshot> GetSessions() => _sessions.Values.Select(s => s.Snapshot()).OrderBy(s => s.Started).ToList();
+    public IReadOnlyList<SessionSnapshot> GetSessions() =>
+        _sessions.Values.Select(s => s.Snapshot()).Concat(ExternalSessions()).OrderBy(s => s.Started).ToList();
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -130,7 +140,7 @@ public sealed class ServerHost
         }
     }
 
-    static IEnumerable<string> LocalAddresses()
+    public static IEnumerable<string> LocalAddresses()
     {
         try
         {
@@ -174,7 +184,7 @@ public sealed class ServerHost
                     Log($"Rejected {remote}: unencrypted client");
                     return;
                 }
-                if (_sessions.Count >= _opts.MaxSessions)
+                if (SessionCount >= _opts.MaxSessions)
                 {
                     using var ch = new ControlChannel(c, stream);
                     ch.TrySend(new ControlMessage { Type = "error", Message = "Server is busy (too many sessions)" });

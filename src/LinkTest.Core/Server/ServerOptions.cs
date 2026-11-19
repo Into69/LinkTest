@@ -18,6 +18,16 @@ public sealed class ServerOptions
     public bool RequireTls { get; set; }
     /// <summary>Server certificate file (created on first start); null = the per-user default.</summary>
     public string? CertificatePath { get; set; }
+    /// <summary>Browser tests: web page on this TCP port and WebRTC on the same UDP port (0 = off).</summary>
+    public int WebPort { get; set; }
+    /// <summary>Also serve the web page over HTTPS on this TCP port (0 = off), with the server certificate.</summary>
+    public int WebHttpsPort { get; set; }
+    /// <summary>Where browser test results are saved; null = the per-user default.</summary>
+    public string? WebResultsFolder { get; set; }
+    public const int DefaultWebPort = Protocol.DefaultPort + 1, DefaultWebHttpsPort = Protocol.DefaultPort + 2;
+    public static string DefaultWebResultsFolder =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinkTest", "web-results");
+
     public bool AutoUpdate { get; set; }
     public bool NoUpdateCheck { get; set; }
     public bool UpdateNow { get; set; }
@@ -32,6 +42,12 @@ public sealed class ServerOptions
         for (int i = 0; i < args.Length; i++)
         {
             string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
+            // Optional port number after a flag.
+            int PortOr(int dflt)
+            {
+                if (i + 1 < args.Length && int.TryParse(args[i + 1], out int p)) { i++; return p; }
+                return dflt;
+            }
             try
             {
                 switch (args[i].ToLowerInvariant())
@@ -44,6 +60,12 @@ public sealed class ServerOptions
                     case "--auto-update": o.AutoUpdate = true; break;
                     case "--require-tls": o.RequireTls = true; break;
                     case "--cert": o.CertificatePath = Next(); break;
+                    case "--web": o.WebPort = PortOr(DefaultWebPort); break;
+                    case "--web-https":
+                        o.WebHttpsPort = PortOr(DefaultWebHttpsPort);
+                        if (o.WebPort == 0) o.WebPort = DefaultWebPort;
+                        break;
+                    case "--web-results": o.WebResultsFolder = Next(); break;
                     case "--no-ip-lookup": o.NoIpLookup = true; break;
                     case "--no-update-check": o.NoUpdateCheck = true; break;
                     case "--update": o.UpdateNow = true; break;
@@ -54,7 +76,14 @@ public sealed class ServerOptions
             }
             catch (Exception e) { Console.Error.WriteLine(e.Message); return null; }
         }
-        return o.Port is > 0 and < 65536 ? o : null;
+        static bool Ok(int p, bool optional) => (optional && p == 0) || p is > 0 and < 65536;
+        if (!Ok(o.Port, false) || !Ok(o.WebPort, true) || !Ok(o.WebHttpsPort, true)) return null;
+        if (o.WebPort != 0 && (o.WebPort == o.Port || o.WebPort == o.WebHttpsPort))
+        {
+            Console.Error.WriteLine("The web port must differ from --port and the HTTPS port.");
+            return null;
+        }
+        return o;
     }
 }
 

@@ -10,10 +10,18 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- Single-file publish: keep the WebRTC native libraries (browser tests) inside the exe. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\LinkTest.Core\LinkTest.Core.csproj" />
+    <ProjectReference Include="..\LinkTest.Web\LinkTest.Web.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Licences of the bundled WebRTC / web server components (shipped in the release zip). -->
+    <None Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

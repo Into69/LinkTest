@@ -61,11 +61,19 @@ public sealed class TestRecord
     public double CapacityDownMbps { get; set; } = double.NaN;
     public bool CapacityUpAtLimit { get; set; }
     public bool CapacityDownAtLimit { get; set; }
+    /// <summary>Set for a speed test (maximum rate each way, one direction after the other); null otherwise.</summary>
+    public SpeedResult? Speed { get; set; }
     /// <summary>Seconds to leave out when judging the test: the warm-up, or the idle baseline for older records.</summary>
     public double JudgeAfterSec => Math.Max(WarmupSec, Config.BaselineSec);
 
-    public string Mode => Config.DscpSimulate ? "DSCP simulate"
+    public string Mode => Speed != null ? "Speed test" : Config.DscpSimulate ? "DSCP simulate"
         : Config.Protocol == TransportKind.Mixed ? $"Mixed {Config.UdpSharePct:0}% UDP" : Config.Protocol.ToString().ToUpperInvariant();
+
+    /// <summary>The traffic the test sent, for reports ("5 Mbps up / 10 Mbps down", or the speed test plan).</summary>
+    [JsonIgnore]
+    public string TrafficText => Speed is { } s
+        ? $"maximum rate, {s.Connections} TCP connection(s), {s.DownSec} s download then {s.UpSec} s upload"
+        : $"{Config.UpMbps.ToString("0.###", CultureInfo.InvariantCulture)} Mbps up / {Config.DownMbps.ToString("0.###", CultureInfo.InvariantCulture)} Mbps down";
 
     public string ToJson() => JsonSerializer.Serialize(this, Json.Records);
     public static TestRecord? FromJson(string json) => JsonSerializer.Deserialize<TestRecord>(json, Json.Records);
@@ -93,6 +101,40 @@ public sealed class TestRecord
     {
         string host = new string(Server.Split(' ')[0].Select(c => char.IsLetterOrDigit(c) || c is '.' or '-' ? c : '_').ToArray());
         return $"LinkTest_{StartedAt:yyyyMMdd_HHmmss}_{host}.{ext}";
+    }
+}
+
+/// <summary>
+/// Result of a speed test: the download is measured first, then the upload, each as fast as the link allows over
+/// several TCP connections. Rates are averages of each phase without its first seconds (TCP ramp-up).
+/// </summary>
+public sealed class SpeedResult
+{
+    public double DownMbps { get; set; } = double.NaN;
+    public double UpMbps { get; set; } = double.NaN;
+    /// <summary>Best single second.</summary>
+    public double DownPeakMbps { get; set; } = double.NaN;
+    public double UpPeakMbps { get; set; } = double.NaN;
+    public double IdleRttMs { get; set; } = double.NaN;
+    /// <summary>Average round-trip time while downloading / uploading (bufferbloat in each direction).</summary>
+    public double DownLoadedRttMs { get; set; } = double.NaN;
+    public double UpLoadedRttMs { get; set; } = double.NaN;
+    /// <summary>RTT variation while idle (mean difference between consecutive seconds).</summary>
+    public double IdleJitterMs { get; set; } = double.NaN;
+    public int DownSec { get; set; }
+    public int UpSec { get; set; }
+    public int Connections { get; set; }
+    /// <summary>Seconds of each phase left out as ramp-up.</summary>
+    public int RampSec { get; set; }
+
+    public string Summary
+    {
+        get
+        {
+            static string F(double v, string f) => double.IsFinite(v) ? v.ToString(f, CultureInfo.InvariantCulture) : "–";
+            return $"download {F(DownMbps, "0.0")} Mbps, upload {F(UpMbps, "0.0")} Mbps, latency idle {F(IdleRttMs, "0.0")} ms / " +
+                   $"downloading {F(DownLoadedRttMs, "0.0")} ms / uploading {F(UpLoadedRttMs, "0.0")} ms";
+        }
     }
 }
 
@@ -208,12 +250,23 @@ public sealed class ResultStore
         public TestRecord Summary { get; set; } = new();
     }
 
+    /// <summary>Saves the record under a new file name (tests started in the same second get _2, _3, …).</summary>
     public string Save(TestRecord r)
     {
         Directory.CreateDirectory(Folder);
-        string path = Path.Combine(Folder, r.SuggestedFileName("json"));
-        File.WriteAllText(path, r.ToJson());
-        return path;
+        string name = r.SuggestedFileName("json"), json = r.ToJson();
+        for (int i = 1; ; i++)
+        {
+            string path = Path.Combine(Folder, i == 1 ? name : $"{Path.GetFileNameWithoutExtension(name)}_{i}.json");
+            try
+            {
+                using var f = new FileStream(path, FileMode.CreateNew, FileAccess.Write);   // atomic: never overwrites
+                using var w = new StreamWriter(f);
+                w.Write(json);
+                return path;
+            }
+            catch (IOException) when (File.Exists(path) && i < 100) { }
+        }
     }
 
     /// <summary>Saved tests, newest first (unreadable files are skipped).</summary>

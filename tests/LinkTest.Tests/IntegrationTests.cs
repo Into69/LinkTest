@@ -30,7 +30,7 @@ public sealed class ServerFixture : IAsyncLifetime
     }
 
     /// <summary>A port free for both TCP and UDP (the server uses the same number for both).</summary>
-    static int FreePort()
+    internal static int FreePort()
     {
         for (int i = 0; i < 50; i++)
         {

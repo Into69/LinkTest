@@ -6,6 +6,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using LinkTest.Core;
 using LinkTest.Server;
+using LinkTest.Web;
 
 namespace LinkTest.ServerGui;
 
@@ -24,6 +25,10 @@ sealed class ServerForm : Form
     readonly CheckBox _lookupClients = new() { Text = "Look up client IP details (ISP, location via ipinfo.io)", AutoSize = true };
     readonly CheckBox _requireTls = new() { Text = "Require encrypted clients (TLS, client 1.9+)", AutoSize = true };
     readonly CheckBox _autoInstall = new() { Text = "Install updates automatically when no tests are running", AutoSize = true };
+    readonly CheckBox _webEnabled = new() { Text = "Browser tests (web page)", AutoSize = true };
+    readonly CheckBox _webHttps = new() { Text = "Also HTTPS (next port up)", AutoSize = true };
+    readonly NumericUpDown _webPort = Num(1, 65534);
+    readonly LinkLabel _webLink = new() { AutoSize = true, Visible = false, Margin = new Padding(0, 4, 0, 0) };
     readonly Button _startBtn = new() { Text = "Start server", Height = 36, Width = 150 };
     readonly Button _stopBtn = new() { Text = "Stop server", Height = 36, Width = 120, Enabled = false };
     readonly Button _firewallBtn = new() { Text = "Add firewall rules…", Height = 36, AutoSize = true };
@@ -40,6 +45,7 @@ sealed class ServerForm : Form
     readonly Dictionary<uint, (long rx, long tx, long lost, long exp, DateTime at)> _prev = new();
 
     ServerHost? _host;
+    WebServer? _web;
     Task? _hostTask;
     CancellationTokenSource? _hostCts;
     UpdateInfo? _update;
@@ -119,6 +125,19 @@ sealed class ServerForm : Form
         settings.SetColumnSpan(checks, 2);
         _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients, _requireTls });
 
+        AddField(settings, "Browser test port", _webPort, 0, 3,
+            "Web page (TCP) and WebRTC traffic (UDP) for browser tests, both on this port. Must differ from the client port.");
+        var web = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 0), WrapContents = true };
+        web.Controls.Add(_webEnabled);
+        web.Controls.Add(_webHttps);
+        settings.Controls.Add(web, 2, 3);
+        settings.SetColumnSpan(web, 2);
+        _inputs.AddRange(new Control[] { _webEnabled, _webHttps });
+        _tips.SetToolTip(_webEnabled, "Lets anyone who can reach this PC run a test from a web browser (no app needed): open the link shown below.\n" +
+                                      "UDP-style traffic uses WebRTC; the shared key above applies to browser tests too.");
+        _tips.SetToolTip(_webHttps, "Encrypted page with this server's self-signed certificate (browsers warn once). Needed for location sharing from the browser.");
+        _webLink.LinkClicked += (_, _) => { if (_webLink.Tag is string u) OpenUrl(u); };
+
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 6, 12, 6), BackColor = Color.FromArgb(235, 238, 242), WrapContents = true };
         _startBtn.Font = new Font(Font, FontStyle.Bold);
         _startBtn.BackColor = Color.FromArgb(0, 120, 212); _startBtn.ForeColor = Color.White; _startBtn.FlatStyle = FlatStyle.Flat;
@@ -126,10 +145,11 @@ sealed class ServerForm : Form
         _state.Margin = new Padding(16, 8, 8, 0);
         actions.Controls.AddRange(new Control[] { _startBtn, _stopBtn, _firewallBtn, _updateBtn, _state });
         _tips.SetToolTip(_updateBtn, "Check GitHub for a newer version now and offer to install it.");
-        _tips.SetToolTip(_firewallBtn, "Adds inbound Windows Firewall rules for the port (asks for Administrator rights).");
+        _tips.SetToolTip(_firewallBtn, "Adds inbound Windows Firewall rules for the port, and the browser test ports when enabled (asks for Administrator rights).");
 
-        var addrPanel = new Panel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6) };
+        var addrPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6), FlowDirection = FlowDirection.TopDown, WrapContents = false };
         addrPanel.Controls.Add(_addresses);
+        addrPanel.Controls.Add(_webLink);
 
         foreach (var (name, w) in new[] { ("Session", 80), ("Client", 130), ("Host (reverse DNS)", 170), ("ISP / ASN", 180), ("IP location", 160), ("Device location", 190), ("Version", 60),
                                           ("Mode", 110), ("Duration", 70), ("Rx / upload Mbps", 110), ("Tx / download Mbps", 120), ("Loss %", 60), ("RTT ms", 60), ("Classes", 55) })
@@ -214,7 +234,13 @@ sealed class ServerForm : Form
         };
         var page = new ToolStripMenuItem("Project page on GitHub");
         page.Click += (_, _) => OpenUrl(Updater.ProjectUrl);
-        menu.DropDownItems.AddRange(new ToolStripItem[] { check, auto, new ToolStripSeparator(), page });
+        var webResults = new ToolStripMenuItem("Open browser test results folder");
+        webResults.Click += (_, _) =>
+        {
+            Directory.CreateDirectory(ServerOptions.DefaultWebResultsFolder);
+            OpenUrl(ServerOptions.DefaultWebResultsFolder);
+        };
+        menu.DropDownItems.AddRange(new ToolStripItem[] { check, auto, new ToolStripSeparator(), webResults, page });
         return menu;
     }
 
@@ -234,6 +260,9 @@ sealed class ServerForm : Form
         _lookupClients.Checked = _settings.LookupClients;
         _requireTls.Checked = _settings.RequireTls;
         _autoInstall.Checked = _settings.AutoInstallUpdates;
+        _webEnabled.Checked = _settings.WebEnabled;
+        _webHttps.Checked = _settings.WebHttps;
+        _webPort.Value = Math.Clamp(_settings.WebPort, 1, 65534);
         _status.Text = "Server stopped";
     }
 
@@ -248,6 +277,9 @@ sealed class ServerForm : Form
         _settings.LookupClients = _lookupClients.Checked;
         _settings.RequireTls = _requireTls.Checked;
         _settings.AutoInstallUpdates = _autoInstall.Checked;
+        _settings.WebEnabled = _webEnabled.Checked;
+        _settings.WebHttps = _webHttps.Checked;
+        _settings.WebPort = (int)_webPort.Value;
         _settings.Save();
     }
 
@@ -272,6 +304,12 @@ sealed class ServerForm : Form
     void StartServer()
     {
         if (Running) return;
+        if (_webEnabled.Checked && (_webPort.Value == _port.Value || (_webHttps.Checked && _webPort.Value + 1 == _port.Value)))
+        {
+            MessageBox.Show(this, "The browser test port must differ from the client port (and, with HTTPS, so must the port after it).",
+                "LinkTest Server", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         SaveSettings();
         var opts = new ServerOptions
         {
@@ -282,6 +320,8 @@ sealed class ServerForm : Form
             MaxSessions = (int)_maxSessions.Value,
             NoIpLookup = !_lookupClients.Checked,
             RequireTls = _requireTls.Checked,
+            WebPort = _webEnabled.Checked ? (int)_webPort.Value : 0,
+            WebHttpsPort = _webEnabled.Checked && _webHttps.Checked ? (int)_webPort.Value + 1 : 0,
         };
         _host = new ServerHost(opts) { PeriodicStatus = false };
         _hostCts = new CancellationTokenSource();
@@ -303,6 +343,40 @@ sealed class ServerForm : Form
         });
         _status.Text = $"Listening on TCP+UDP port {opts.Port}";
         _timer.Start();
+        if (opts.WebPort > 0) _ = StartWebAsync(host);
+    }
+
+    async Task StartWebAsync(ServerHost host)
+    {
+        var web = new WebServer(host);
+        try
+        {
+            await web.StartAsync(_hostCts!.Token);
+            if (_host != host) { await web.DisposeAsync(); return; }
+            _web = web;
+            string url = web.Urls.FirstOrDefault() ?? "";
+            const string prefix = "Browser test page: ";
+            _webLink.Text = prefix + url + (host.Options.WebHttpsPort > 0 ? $"   (HTTPS on port {host.Options.WebHttpsPort})" : "") +
+                            (web.RtcUnavailable != null ? "   - UDP tests unavailable: " + web.RtcUnavailable : "");
+            _webLink.LinkArea = new LinkArea(prefix.Length, url.Length);
+            _webLink.Tag = url;
+            _webLink.Visible = url.Length > 0;
+        }
+        catch (Exception e)
+        {
+            await web.DisposeAsync();
+            OnLog($"{DateTime.Now:HH:mm:ss} Browser tests unavailable: {e.Message}");
+            if (_host == host)
+                MessageBox.Show(this, "Browser tests couldn't start:\n" + e.Message, "LinkTest Server", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    async Task StopWebAsync()
+    {
+        var web = _web;
+        _web = null;
+        _webLink.Visible = false;
+        if (web != null) await web.DisposeAsync();
     }
 
     async Task StopServerAsync()
@@ -312,6 +386,7 @@ sealed class ServerForm : Form
         if (n > 0 && MessageBox.Show(this, $"{n} test(s) are running. Stop the server anyway?", "LinkTest Server",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
         _stopBtn.Enabled = false;
+        await StopWebAsync();
         _hostCts?.Cancel();
         try { await _hostTask!; } catch { }
     }
@@ -327,6 +402,7 @@ sealed class ServerForm : Form
             OnLog($"{DateTime.Now:HH:mm:ss} Server failed: {msg}");
             MessageBox.Show(this, msg, "LinkTest Server", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        _ = StopWebAsync();
         _host = null;
         _hostTask = null;
         SetRunningUi(false);
@@ -390,15 +466,16 @@ sealed class ServerForm : Form
 
     void AddFirewallRules()
     {
-        int port = (int)_port.Value;
-        string exe = Environment.ProcessPath ?? "";
-        string args = $"/c netsh advfirewall firewall add rule name=\"LinkTest TCP {port}\" dir=in action=allow protocol=TCP localport={port} & " +
-                      $"netsh advfirewall firewall add rule name=\"LinkTest UDP {port}\" dir=in action=allow protocol=UDP localport={port}";
+        int port = (int)_port.Value, webPort = (int)_webPort.Value;
+        string tcp = _webEnabled.Checked ? $"{port},{webPort}" + (_webHttps.Checked ? $",{webPort + 1}" : "") : $"{port}";
+        string udp = _webEnabled.Checked ? $"{port},{webPort}" : $"{port}";
+        string args = $"/c netsh advfirewall firewall add rule name=\"LinkTest TCP {tcp}\" dir=in action=allow protocol=TCP localport={tcp} & " +
+                      $"netsh advfirewall firewall add rule name=\"LinkTest UDP {udp}\" dir=in action=allow protocol=UDP localport={udp}";
         try
         {
             var p = Process.Start(new ProcessStartInfo("cmd.exe", args) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden });
             p?.WaitForExit(15000);
-            OnLog($"{DateTime.Now:HH:mm:ss} " + (p?.ExitCode == 0 ? $"Firewall rules added for TCP/UDP port {port}." : "Adding firewall rules may have failed (exit code " + p?.ExitCode + ")."));
+            OnLog($"{DateTime.Now:HH:mm:ss} " + (p?.ExitCode == 0 ? $"Firewall rules added for TCP {tcp} and UDP {udp}." : "Adding firewall rules may have failed (exit code " + p?.ExitCode + ")."));
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -489,6 +566,9 @@ sealed class ServerForm : Form
         }
         SaveSettings();
         ServerHost.LogMessage -= OnLog;
+        var web = _web;
+        _web = null;
+        if (web != null) try { Task.Run(() => web.DisposeAsync().AsTask()).Wait(3000); } catch { }
         _hostCts?.Cancel();
         try { _hostTask?.Wait(3000); } catch { }
     }

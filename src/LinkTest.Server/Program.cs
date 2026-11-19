@@ -1,5 +1,6 @@
 using LinkTest.Core;
 using LinkTest.Server;
+using LinkTest.Web;
 
 var opts = ServerOptions.Parse(args);
 if (opts == null)
@@ -9,6 +10,7 @@ if (opts == null)
 
         Usage: LinkTestServer [--port N] [--bind ADDRESS] [--key SECRET] [--max-mbps N] [--max-sessions N]
                               [--auto-update | --no-update-check] [--no-ip-lookup] [--require-tls] [--cert FILE]
+                              [--web [PORT]] [--web-https [PORT]] [--web-results FOLDER]
                LinkTestServer --update | --update-from PACKAGE.zip | --version
 
           --port N              TCP and UDP port to listen on (default 7447)
@@ -21,12 +23,16 @@ if (opts == null)
           --no-ip-lookup        Don't query ipinfo.io for client ISP / location (reverse DNS still shown)
           --require-tls         Refuse clients that don't encrypt the control connection (clients older than 1.9)
           --cert FILE           Server certificate (PFX, created on first start; default: per-user LinkTest folder)
+          --web [PORT]          Browser tests: web page on TCP PORT, WebRTC on UDP PORT (default 7448)
+          --web-https [PORT]    Also serve the page over HTTPS on PORT (default 7449; self-signed certificate)
+          --web-results FOLDER  Where browser test results are saved (default: per-user LinkTest\web-results)
           --update              Install the latest release now and exit
           --update-from FILE    Install from a downloaded release zip (offline update) and exit
 
         Windows Firewall (run once as Administrator):
           netsh advfirewall firewall add rule name="LinkTest TCP" dir=in action=allow protocol=TCP localport=7447
           netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow protocol=UDP localport=7447
+          With --web / --web-https, also allow TCP 7448-7449 and UDP 7448.
         """);
     return args.Length == 1 && args[0] is "--help" or "-h" or "/?" ? 0 : 1;
 }
@@ -50,14 +56,26 @@ var updater = new ServerUpdateService(host, opts, UpdateChannel.Server, cts);
 updater.UpdateAvailable += _ => { if (!opts.AutoUpdate) ServerHost.Log("Install it with 'LinkTestServer --update' or run with --auto-update."); };
 if (!opts.NoUpdateCheck) _ = updater.RunAsync();
 
+WebServer? web = null;
 try
 {
-    await host.RunAsync(cts.Token);
+    var run = host.RunAsync(cts.Token);
+    if (opts.WebPort > 0)
+    {
+        web = new WebServer(host);
+        try { await web.StartAsync(cts.Token); }
+        catch (Exception e) { ServerHost.Log("Browser tests unavailable: " + e.Message); await web.DisposeAsync(); web = null; }
+    }
+    await run;
 }
 catch (Exception e)
 {
     ServerHost.Log("Fatal: " + e.Message);
     return 2;
+}
+finally
+{
+    if (web != null) await web.DisposeAsync();
 }
 
 if (updater.PendingPackage != null)
