@@ -2,6 +2,12 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.10.2]
+
+### Removed
+- Android Auto support (added in 1.10.0). Android Auto only lists apps like LinkTest when they're installed from
+  Google Play, so it wasn't usable with the GitHub release.
+
 ## [1.10.1]
 
 ### Fixed

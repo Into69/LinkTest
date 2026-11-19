@@ -6,15 +6,6 @@
       <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Continuous network link-quality measurement started by the user" />
     </service>
-    <!-- Android Auto: live test figures and Start / Stop on the car screen (see CarApp.cs). -->
-    <service android:name="io.github.into69.linktest.CarService" android:exported="true">
-      <intent-filter>
-        <action android:name="androidx.car.app.CarAppService" />
-        <category android:name="androidx.car.app.category.IOT" />
-      </intent-filter>
-    </service>
-    <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
-    <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="1" />
   </application>
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

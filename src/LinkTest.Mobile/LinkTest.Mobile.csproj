@@ -29,7 +29,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
-    <PackageReference Include="Xamarin.AndroidX.Car.App.App" Version="1.7.0.1" />
   </ItemGroup>
 
   <ItemGroup>
