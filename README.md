@@ -121,7 +121,7 @@ What runs in the browser:
   call, a VoIP call, gaming, and mixed traffic.
 - Bufferbloat is measured from an idle baseline, MOS is estimated, and live charts are shown. Every figure
   has the same ⓘ explanation as in the apps.
-- The page can record the browser's location with the test. Browsers only allow this on HTTPS pages.
+- The page never asks for or records the browser's location.
 
 Results are saved on the server, by default in `%LOCALAPPDATA%\LinkTest\web-results`; `--web-results`
 changes the folder. Each result can be opened as an HTML report, or downloaded as a PDF report or CSV,

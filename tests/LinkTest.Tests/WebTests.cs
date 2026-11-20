@@ -121,10 +121,10 @@ public class WebTests : IClassFixture<WebFixture>
         Assert.NotNull(rec.BloatGrade);
         Assert.True(b.Samples.Count >= 4);
         Assert.Contains(rec.Events, e => e.StartsWith("Browser: "));
-        var fix = Assert.Single(rec.Locations);
-        Assert.Equal(45.4215, fix.Lat, 4);
-        Assert.Equal("browser", fix.Source);
-        Assert.Contains(rec.Samples.Lat!, v => Math.Abs(v - 45.4215) < 1e-4);
+        // Browser tests don't record locations, even if a page sends one.
+        Assert.Empty(rec.Locations);
+        Assert.Null(rec.Samples.Lat);
+        Assert.Null(rec.Connection?.DeviceLocation);
         Assert.Equal(5, rec.Samples.T.Count);      // every second, including the last
         await AssertReportsAsync((string)done["file"]!);
     }

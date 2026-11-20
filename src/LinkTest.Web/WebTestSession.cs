@@ -50,7 +50,6 @@ sealed class WebTestSession : IDisposable
     readonly CancellationTokenSource _cts = new();
     readonly ConcurrentDictionary<int, BrowserSecond> _browser = new();
     readonly List<string> _events = new();
-    readonly List<GeoFix> _locations = new();
     readonly SampleSeries _series = new();
     readonly BufferbloatMeter _bloat = new();
     readonly UdpMeter _upUdp = new();
@@ -60,7 +59,6 @@ sealed class WebTestSession : IDisposable
     int _stopOnce;
     double _lastRttMs = double.NaN;
     long _upLostTotal, _upExpTotal, _downLostTotal, _downExpTotal;
-    GeoFix? _lastFix;
     IpInfo? _clientInfo;
 
     /// <summary>Highest UDP-style rate per direction a browser test runs at.</summary>
@@ -344,13 +342,6 @@ sealed class WebTestSession : IDisposable
         if (double.IsFinite(s.RttMs)) _lastRttMs = s.RttMs;
     }
 
-    public void AddLocation(GeoFix f)
-    {
-        if (!f.IsValid) return;
-        _lastFix = f;
-        lock (_locations) _locations.Add(f);
-    }
-
     async Task TickLoopAsync()
     {
         long prevUpTcp = 0, prevDownTcp = 0, prevDownUdp = 0, prevBlocked = 0;
@@ -490,7 +481,6 @@ sealed class WebTestSession : IDisposable
         lock (_series)
         {
             _series.Add(s);
-            _series.SetLocation(_lastFix);
             if (!baseline) _maxGap = Math.Max(_maxGap, Math.Max(Z(upGap), Z(downGap)));
             if (double.IsFinite(mos) && !baseline) { _mosSum += mos; _mosCount++; }
             if (double.IsFinite(s.RttMinMs)) _rttMin = double.IsFinite(_rttMin) ? Math.Min(_rttMin, s.RttMinMs) : s.RttMinMs;
@@ -621,11 +611,10 @@ sealed class WebTestSession : IDisposable
             Classes = classes,
             Samples = series,
             Connection = new ConnectionInfo(ServerName, $"web browser ({BrowserName(UserAgent)})", ClientIp.ToString(), "–",
-                info, info, true, _lastFix, Security),
+                info, info, true, null, Security),
             WarmupSec = WarmupSec,
             Family = ClientIp.IsIPv4MappedToIPv6 || ClientIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? "IPv4" : "IPv6",
         };
-        lock (_locations) rec.Locations = _locations.ToList();
         lock (_events)
         {
             rec.Events = _events.ToList();
@@ -673,7 +662,7 @@ sealed class WebTestSession : IDisposable
 
     public SessionSnapshot Snapshot() => new(Id, ClientIp.ToString(), "web", Speed != null ? "Web speed test" : Config.Protocol == TransportKind.Tcp ? "Web TCP" : Config.Protocol == TransportKind.Mixed ? "Web mixed" : "Web UDP",
         StartedAt, IsRunning, Interlocked.Read(ref _rxTotal), Interlocked.Read(ref _txTotal), _upLostTotal, _upExpTotal, _lastRttMs,
-        UsesUdp && UsesTcp ? 2 : 1, _clientInfo, _lastFix, null, Security.StartsWith("HTTPS") ? Security : null);   // 🔒 only when encrypted
+        UsesUdp && UsesTcp ? 2 : 1, _clientInfo, null, null, Security.StartsWith("HTTPS") ? Security : null);   // 🔒 only when encrypted
 
     public void Dispose()
     {

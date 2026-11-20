@@ -135,7 +135,7 @@ sealed class ServerForm : Form
         _inputs.AddRange(new Control[] { _webEnabled, _webHttps });
         _tips.SetToolTip(_webEnabled, "Lets anyone who can reach this PC run a test from a web browser (no app needed): open the link shown below.\n" +
                                       "UDP-style traffic uses WebRTC; the shared key above applies to browser tests too.");
-        _tips.SetToolTip(_webHttps, "Encrypted page with this server's self-signed certificate (browsers warn once). Needed for location sharing from the browser.");
+        _tips.SetToolTip(_webHttps, "Encrypted page with this server's self-signed certificate (browsers warn once). Protects the shared key.");
         _webLink.LinkClicked += (_, _) => { if (_webLink.Tag is string u) OpenUrl(u); };
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(12, 6, 12, 6), BackColor = Color.FromArgb(235, 238, 242), WrapContents = true };

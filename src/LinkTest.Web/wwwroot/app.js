@@ -371,7 +371,6 @@ function beginLoad() {
     : st.warmupSec > 0 ? ` · high latency: the first ${st.warmupSec} s are a warm-up` : '';
   t.slowNote = slow;
   status(st.speed ? 'Measuring idle latency…' + slow : `Running · ${st.describe}${slow}` + (st.baselineSec > 0 ? ` · measuring idle latency for ${st.baselineSec} s` : ''));
-  if ($('shareLocation').checked && window.isSecureContext && navigator.geolocation) startLocation(t);
   document.addEventListener('visibilitychange', t.onVis = () => { if (document.hidden) t.hiddenAt = performance.now(); });
 }
 
@@ -450,17 +449,6 @@ function scheduleSecond(t) {
   }, Math.max(0, due - performance.now()));
 }
 
-function startLocation(t) {
-  let last = 0;
-  t.geo = navigator.geolocation.watchPosition(p => {
-    const now = Date.now();
-    if (now - last < 10000) return;
-    last = now;
-    const c = p.coords;
-    send({ t: 'loc', lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, speed: c.speed });
-  }, err => status('Location unavailable: ' + err.message, true), { enableHighAccuracy: true, maximumAge: 10000 });
-}
-
 function onSample(s) {
   const st = test?.st;
   if (st?.speed) { onSpeedSample(test, s); return; }
@@ -532,7 +520,6 @@ function cleanupTest() {
   if (t) {
     (t.timers || []).forEach(clearInterval);
     clearTimeout(t.secTimer);
-    if (t.geo != null) navigator.geolocation.clearWatch(t.geo);
     if (t.onVis) document.removeEventListener('visibilitychange', t.onVis);
     for (const b of t.bulk) try { b.ws.close(); } catch { }
     try { t.dc?.close(); } catch { }
@@ -647,10 +634,6 @@ async function init() {
       applyPreset('speedtest', false);
     }
   } catch { }
-  if (!window.isSecureContext) {
-    $('shareLocation').disabled = true;
-    $('shareLocation').parentElement.title = 'Browsers only allow location on HTTPS pages';
-  }
   try { help = await (await fetch('/api/help')).json(); } catch { }
   connect();
   loadHistory();

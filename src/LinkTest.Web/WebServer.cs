@@ -333,9 +333,6 @@ public sealed class WebServer : IAsyncDisposable
                     case "sec" when session != null:
                         session.OnBrowserSecond(ParseSecond(m));
                         break;
-                    case "loc" when session != null:
-                        session.AddLocation(new GeoFix(DateTime.Now, D(m["lat"]), D(m["lon"]), D(m["acc"]), D(m["alt"]), D(m["speed"]), "browser"));
-                        break;
                     case "stop" when session != null:
                         await session.StopAsync("Stopped by user");
                         break;

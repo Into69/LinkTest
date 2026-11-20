@@ -2,6 +2,12 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.11.1]
+
+### Removed
+- Browser tests no longer offer location sharing. The page doesn't ask for the browser's location, and the
+  server ignores and doesn't save any location a page sends. The apps' optional location reporting is unchanged.
+
 ## [1.11.0]
 
 ### New
