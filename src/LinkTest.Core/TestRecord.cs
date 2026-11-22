@@ -39,6 +39,8 @@ public sealed class TestRecord
     public string Summary { get; set; } = "";
     public ConnectionInfo? Connection { get; set; }
     public MtuResult? Mtu { get; set; }
+    /// <summary>SNMP test (polls to UDP 161, informs to UDP 162), when it ran.</summary>
+    public Snmp.SnmpResult? Snmp { get; set; }
     public List<TraceResult> Traces { get; set; } = new();
     public List<TunnelStatus> Tunnels { get; set; } = new();
     public List<ClassSummary> Classes { get; set; } = new();
@@ -66,7 +68,7 @@ public sealed class TestRecord
     /// <summary>Seconds to leave out when judging the test: the warm-up, or the idle baseline for older records.</summary>
     public double JudgeAfterSec => Math.Max(WarmupSec, Config.BaselineSec);
 
-    public string Mode => Speed != null ? "Speed test" : Config.DscpSimulate ? "DSCP simulate"
+    public string Mode => Speed != null ? "Speed test" : Snmp != null && Config.UpMbps + Config.DownMbps <= 0 ? "SNMP test" : Config.DscpSimulate ? "DSCP simulate"
         : Config.Protocol == TransportKind.Mixed ? $"Mixed {Config.UdpSharePct:0}% UDP" : Config.Protocol.ToString().ToUpperInvariant();
 
     /// <summary>The traffic the test sent, for reports ("5 Mbps up / 10 Mbps down", or the speed test plan).</summary>

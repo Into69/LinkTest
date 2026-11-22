@@ -127,6 +127,12 @@ public static class StatHelp
             "Share of UDP packets lost each second, upload and download.",
             "flat at 0",
             G("0 almost everywhere"), F("occasional small spikes"), P("frequent spikes or a raised baseline"));
+        Add("charts", "snmp", "SNMP test",
+            "Network monitoring traffic: GetRequests to the server's SNMP agent port (UDP 161) once a second and InformRequests to its " +
+            "notification port (UDP 162) every 5 s, with a management station's timers: a request not answered within 1 s is sent " +
+            "again, up to 5 times, then counted as timed out. Browsers can't use ports below 1024, so the browser test uses UDP 1161 / 1162 over WebRTC.",
+            "every request answered at the first try, in about one round-trip time",
+            G("all answered at the first try"), F("some answered only after retries, or a few timed out"), P("no answers: the port is blocked on the way"));
 
         // ---------------------------------------------------------------- traffic classes table
         Add("classes", "class.class", "Class", "The traffic type being simulated (with DSCP Simulate: an enterprise mix from voice to scavenger).", "");

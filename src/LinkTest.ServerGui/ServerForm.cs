@@ -1,3 +1,4 @@
+using LinkTest.Core.Snmp;
 using LinkTest.WinUi;
 using System.Diagnostics;
 using System.Globalization;
@@ -26,6 +27,7 @@ sealed class ServerForm : Form
     readonly CheckBox _requireTls = new() { Text = "Require encrypted clients (TLS, client 1.9+)", AutoSize = true };
     readonly CheckBox _autoInstall = new() { Text = "Install updates automatically when no tests are running", AutoSize = true };
     readonly CheckBox _webEnabled = new() { Text = "Browser tests (web page)", AutoSize = true };
+    readonly CheckBox _snmpEnabled = new() { Text = "SNMP test (UDP 161 / 162)", AutoSize = true };
     readonly CheckBox _webHttps = new() { Text = "Also HTTPS (next port up)", AutoSize = true };
     readonly NumericUpDown _webPort = Num(1, 65534);
     readonly LinkLabel _webLink = new() { AutoSize = true, Visible = false, Margin = new Padding(0, 4, 0, 0) };
@@ -120,10 +122,14 @@ sealed class ServerForm : Form
                                       "Tick this to refuse older clients, whose control connection would be unencrypted.\n" +
                                       "Clients remember this server's certificate fingerprint (shown below when running) the first time they connect.");
         _tips.SetToolTip(_lookupClients, "Public client addresses are looked up at ipinfo.io; private/LAN addresses get reverse DNS only.");
+        checks.Controls.Add(_snmpEnabled);
+        _tips.SetToolTip(_snmpEnabled, "Answers the clients' SNMP test: SNMPv2c polls on UDP 161 and informs on UDP 162 (only with a running test's own community string).\n" +
+                                       "Browsers can't use ports below 1024, so browser SNMP tests use UDP 1161 / 1162.\n" +
+                                       "Turn off if the Windows SNMP service or another SNMP agent / trap receiver on this PC needs those ports.");
         checks.Controls.Add(_autoInstall);
         settings.Controls.Add(checks, 2, 2);
         settings.SetColumnSpan(checks, 2);
-        _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients, _requireTls });
+        _inputs.AddRange(new Control[] { _startOnLaunch, _lookupClients, _requireTls, _snmpEnabled });
 
         AddField(settings, "Browser test port", _webPort, 0, 3,
             "Web page (TCP) and WebRTC traffic (UDP) for browser tests, both on this port. Must differ from the client port.");
@@ -145,7 +151,7 @@ sealed class ServerForm : Form
         _state.Margin = new Padding(16, 8, 8, 0);
         actions.Controls.AddRange(new Control[] { _startBtn, _stopBtn, _firewallBtn, _updateBtn, _state });
         _tips.SetToolTip(_updateBtn, "Check GitHub for a newer version now and offer to install it.");
-        _tips.SetToolTip(_firewallBtn, "Adds inbound Windows Firewall rules for the port, and the browser test ports when enabled (asks for Administrator rights).");
+        _tips.SetToolTip(_firewallBtn, "Adds inbound Windows Firewall rules for the port, the SNMP test ports and the browser test ports when enabled (asks for Administrator rights).");
 
         var addrPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14, 4, 12, 6), FlowDirection = FlowDirection.TopDown, WrapContents = false };
         addrPanel.Controls.Add(_addresses);
@@ -261,6 +267,7 @@ sealed class ServerForm : Form
         _requireTls.Checked = _settings.RequireTls;
         _autoInstall.Checked = _settings.AutoInstallUpdates;
         _webEnabled.Checked = _settings.WebEnabled;
+        _snmpEnabled.Checked = _settings.SnmpEnabled;
         _webHttps.Checked = _settings.WebHttps;
         _webPort.Value = Math.Clamp(_settings.WebPort, 1, 65534);
         _status.Text = "Server stopped";
@@ -278,6 +285,7 @@ sealed class ServerForm : Form
         _settings.RequireTls = _requireTls.Checked;
         _settings.AutoInstallUpdates = _autoInstall.Checked;
         _settings.WebEnabled = _webEnabled.Checked;
+        _settings.SnmpEnabled = _snmpEnabled.Checked;
         _settings.WebHttps = _webHttps.Checked;
         _settings.WebPort = (int)_webPort.Value;
         _settings.Save();
@@ -323,6 +331,7 @@ sealed class ServerForm : Form
             WebPort = _webEnabled.Checked ? (int)_webPort.Value : 0,
             WebHttpsPort = _webEnabled.Checked && _webHttps.Checked ? (int)_webPort.Value + 1 : 0,
         };
+        if (!_snmpEnabled.Checked) opts.SnmpPort = opts.SnmpTrapPort = opts.WebSnmpPort = opts.WebSnmpTrapPort = 0;
         _host = new ServerHost(opts) { PeriodicStatus = false };
         _hostCts = new CancellationTokenSource();
         var host = _host;
@@ -469,6 +478,8 @@ sealed class ServerForm : Form
         int port = (int)_port.Value, webPort = (int)_webPort.Value;
         string tcp = _webEnabled.Checked ? $"{port},{webPort}" + (_webHttps.Checked ? $",{webPort + 1}" : "") : $"{port}";
         string udp = _webEnabled.Checked ? $"{port},{webPort}" : $"{port}";
+        if (_snmpEnabled.Checked)
+            udp += $",{SnmpRun.DefaultPollPort},{SnmpRun.DefaultTrapPort}" + (_webEnabled.Checked ? $",{ServerOptions.DefaultWebSnmpPort},{ServerOptions.DefaultWebSnmpTrapPort}" : "");
         string args = $"/c netsh advfirewall firewall add rule name=\"LinkTest TCP {tcp}\" dir=in action=allow protocol=TCP localport={tcp} & " +
                       $"netsh advfirewall firewall add rule name=\"LinkTest UDP {udp}\" dir=in action=allow protocol=UDP localport={udp}";
         try

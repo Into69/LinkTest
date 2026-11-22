@@ -314,6 +314,12 @@ public static class PdfReportBuilder
                                         $"tested at {N(r.Config.UpMbps, "0.###")} / {N(r.Config.DownMbps, "0.###")} Mbps after a {N(r.WarmupSec, "0")} s ramp-up (left out of the judgement)"));
         foreach (var ch in r.IpChanges) setup.Add(($"Public IP changed {ch.At:HH:mm:ss}", $"{ch.From} -> {ch.To}: {ch.Details}"));
         if (r.Mtu is { } mtu) setup.Add(("Path MTU", mtu.Summary));
+        if (r.Snmp is { } snmp)
+        {
+            if (snmp.Error != null) setup.Add(("SNMP test", snmp.Error));
+            else foreach (var c in new[] { snmp.Polls, snmp.Informs }.Where(c => c != null))
+                setup.Add((c!.Kind == "inform" ? "SNMP informs" : "SNMP polls", c.Text[(c.Text.IndexOf(':') + 2)..] + (snmp.Transport.StartsWith("WebRTC") ? " (browser, over WebRTC)" : "")));
+        }
         foreach (var tr in r.Traces.Where(x => x.Error == null).Take(4)) setup.Add(($"Traceroute {tr.At:HH:mm:ss}", tr.Summary));
         foreach (var (k, v) in setup)
         {

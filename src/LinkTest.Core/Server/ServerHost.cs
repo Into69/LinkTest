@@ -37,6 +37,8 @@ public sealed class ServerHost
         lock (_externalSources) return _externalSources.SelectMany(s => { try { return s(); } catch { return Array.Empty<SessionSnapshot>(); } }).ToList();
     }
     public Socket UdpSocket => _udp;
+    /// <summary>SNMP test ports (UDP 161 / 162); null when off.</summary>
+    public SnmpServer? Snmp { get; private set; }
     /// <summary>Print per-session statistics to the log every 5 s.</summary>
     public bool PeriodicStatus { get; set; } = true;
 
@@ -65,9 +67,16 @@ public sealed class ServerHost
         }
         catch (Exception e) { Log("TLS unavailable (clients will connect unencrypted): " + e.Message); }
         _udpDf = CreateDfSocket();
+        if (_opts.SnmpPort > 0 || _opts.SnmpTrapPort > 0)
+        {
+            Snmp = new SnmpServer(_opts.Bind, _opts.SnmpPort, _opts.SnmpTrapPort);
+            if (!Snmp.Available) { Snmp.Dispose(); Snmp = null; }
+        }
         Log($"LinkTest server {Updater.CurrentVersion} listening on TCP+UDP port {_opts.Port}" +
             (_opts.Key != null ? " (key required)" : "") + $", cap {_opts.MaxMbps} Mbps/direction, max {_opts.MaxSessions} sessions");
         foreach (var a in LocalAddresses()) Log($"  local address: {a}");
+        if (Snmp != null)
+            Log($"  SNMP test on UDP {string.Join(" and ", new[] { (Snmp.PollPort, "agent"), (Snmp.TrapPort, "notifications") }.Where(p => p.Item1 > 0).Select(p => $"{p.Item1} ({p.Item2})"))}");
         if (CertificateFingerprint != null)
             Log($"  TLS certificate SHA-256: {CertificateFingerprint}" + (_opts.RequireTls ? " (encryption required)" : ""));
 
@@ -94,6 +103,7 @@ public sealed class ServerHost
             _listener.Dispose();
             _udp.Dispose();
             _udpDf?.Dispose();
+            Snmp?.Dispose();
         }
     }
 

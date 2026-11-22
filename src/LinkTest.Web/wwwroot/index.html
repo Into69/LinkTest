@@ -46,6 +46,7 @@
       <label data-for="tcp">TCP connections<input id="streams" type="number" min="1" max="8" step="1"></label>
       <label data-for="mixed">UDP share (%)<input id="udpSharePct" type="number" min="0" max="100" step="1"></label>
       <label data-for="bursty">Burst on / off (ms)<span class="pair"><input id="burstOnMs" type="number" min="10" step="10"><input id="burstOffMs" type="number" min="0" step="10"></span></label>
+      <label class="check"><input id="snmp" type="checkbox"> SNMP test: polls and informs to the server (<span id="snmpNote">UDP 1161 / 1162</span>) during the test</label>
       <label id="keyRow" hidden>Server key<input id="key" type="password" autocomplete="off"></label>
     </div>
     <p class="hint" id="presetHint"></p>
@@ -56,6 +57,12 @@
   </section>
 
   <section class="tiles" id="tiles" aria-label="Live results"></section>
+
+  <section class="card snmp" id="snmpCard" hidden>
+    <div class="chart-head"><h3>SNMP</h3><button class="info" data-help="snmp" aria-label="About the SNMP test">i</button></div>
+    <div class="snmp-row" id="snmp-poll"><span class="what">Polls → UDP 1161</span><span class="state">–</span><span class="detail"></span></div>
+    <div class="snmp-row" id="snmp-trap"><span class="what">Informs → UDP 1162</span><span class="state">–</span><span class="detail"></span></div>
+  </section>
 
   <section class="charts">
     <div class="card chart"><div class="chart-head"><h3>Throughput (Mbps)</h3><button class="info" data-help="chart.throughput" aria-label="About this chart">i</button></div><canvas id="chartTput" height="180"></canvas></div>
@@ -88,6 +95,7 @@
       <li><b>Speed test</b> finds the most this link carries: it measures the idle latency, then downloads as fast as possible over several TCP connections, then uploads. The first seconds of each phase (TCP ramp-up) are left out of the result. Latency is measured all along: how much it rises while downloading or uploading is the bufferbloat. The result is capped at the server's limit per direction.</li>
       <li><b>UDP-style traffic</b> runs over a WebRTC data channel set to unreliable and unordered: real UDP packets, real loss and jitter. WebRTC adds congestion control, so when the link is overloaded you may see lower throughput rather than heavy loss. Browsers handle up to <span id="maxUdp">25</span> Mbps each way this way; for higher rates use TCP (a mixed test sends the rest as TCP). The server needs UDP <span class="port" id="udpPort"></span> reachable.</li>
       <li><b>TCP</b> runs over WebSockets: throughput and round-trip time; TCP hides packet loss by retransmitting, so loss isn't measured.</li>
+      <li><b>SNMP test</b> polls the server once a second and sends it an inform every 5 s, with an SNMP manager's timers (1 s timeout, 5 retries): whether the answers come back, how fast, and how many need retries. Browsers can't send SNMP and refuse WebRTC connections to ports below 1024, so the page can't use SNMP's own ports (UDP 161 and 162): it uses the server's browser SNMP ports, <span id="snmpPorts">UDP 1161 and 1162</span>, over WebRTC. For real SNMPv2c to UDP 161 and 162, use the LinkTest apps.</li>
       <li>Keep this tab in the foreground during a test: browsers slow down background tabs, which would show up as gaps and lower upload rates.</li>
       <li>The HTTPS page encrypts the connection, including the server key<span id="httpsLink"></span>.</li>
       <li>Not available in a browser — use the LinkTest apps for these: DSCP marking and the DSCP traffic mix, VPN tunnel simulation, path MTU, traceroute, the capacity test, IPv4 vs IPv6 comparison and TCP retransmit counts.</li>

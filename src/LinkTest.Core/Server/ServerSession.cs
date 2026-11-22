@@ -42,6 +42,7 @@ public sealed class ServerSession : IDisposable
     bool _sendDetail;          // client 1.8+ understands the "stats" message
     bool _sendSeen;            // client 1.9+ understands the "seen" message
     volatile GeoFix? _location;
+    string? _snmpCommunity;
     volatile string? _lookedUpIp;
     volatile string? _currentAddress;
     long _lastRelookupUs;
@@ -125,8 +126,11 @@ public sealed class ServerSession : IDisposable
                 _classes.Add(c);
             }
 
+            var snmp = _host.Snmp;
+            if (snmp != null) _snmpCommunity = snmp.Register(Tag);
             _ctrl.Send(new ControlMessage
             {
+                SnmpCommunity = _snmpCommunity, SnmpPort = snmp?.PollPort ?? 0, SnmpTrapPort = snmp?.TrapPort ?? 0,
                 Type = "welcome", Version = Protocol.Version, AppVersion = Updater.CurrentVersion.ToString(),
                 SessionId = Id, UdpPort = _host.Options.Port, Config = cfg, Message = note, MaxMbps = _host.Options.MaxMbps,
                 ClientAddress = $"{(ClientIp.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{ClientIp}]" : ClientIp.ToString())}:{_remote.Port}",
@@ -417,6 +421,12 @@ public sealed class ServerSession : IDisposable
         var s = Snapshot();
         double loss = s.Expected > 0 ? 100.0 * s.Lost / s.Expected : 0;
         ServerHost.Log($"{Tag} session closed after {dur:0} s: received {s.RxBytes / 1e6:0.0} MB (loss {loss:0.###}%), sent {s.TxBytes / 1e6:0.0} MB");
+        if (_snmpCommunity != null && _host.Snmp is { } snmp)
+        {
+            var (polls, informs, answered) = snmp.Unregister(_snmpCommunity);
+            if (polls + informs > 0) ServerHost.Log($"{Tag} SNMP test: received {polls} poll(s) on UDP {snmp.PollPort} and {informs} inform(s) on UDP {snmp.TrapPort}, answered {answered}");
+            _snmpCommunity = null;
+        }
     }
 
     public void Dispose()

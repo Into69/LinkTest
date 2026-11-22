@@ -15,6 +15,7 @@ sealed class DetailsPage : ContentPage
     string _statShape = "";
     readonly VerticalStackLayout _conn = new() { Spacing = 2 };
     readonly Label _mtu = new() { FontSize = 12 };
+    readonly Label _snmp = new() { FontSize = 12 };
     readonly Label _trace = new() { FontFamily = "monospace", FontSize = 10, LineBreakMode = LineBreakMode.NoWrap };
 
     public DetailsPage()
@@ -35,6 +36,7 @@ sealed class DetailsPage : ContentPage
                     Ui.Card(new VerticalStackLayout { Children = { _statsHint, new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _stats } } }),
                     Ui.Header("Connection"), Ui.Card(_conn),
                     Ui.Header("Path MTU"), Ui.Card(_mtu),
+                    Ui.Header("SNMP"), Ui.Card(_snmp),
                     Ui.Header("Traceroute"), Ui.Card(new ScrollView { Orientation = ScrollOrientation.Horizontal, Content = _trace }),
                 },
             },
@@ -55,6 +57,7 @@ sealed class DetailsPage : ContentPage
 
     void Refresh()
     {
+        ShowSnmp();
         RefreshTunnels();
         RefreshClasses(_app.LastSample);
         RefreshStats(_app.Detail);
@@ -169,6 +172,15 @@ sealed class DetailsPage : ContentPage
         _trace.Text = traces.Count == 0
             ? (_app.Settings.AutoTraceroute ? "Runs at the start and when loss, stalls or tunnel drops appear." : "Off (Settings)")
             : string.Join("\n", traces.Reverse().Select(t => t.Format())) + "\nLoss on one hop that does not continue is usually ICMP rate limiting.";
+    }
+
+    void ShowSnmp()
+    {
+        var sn = _app.Snmp;
+        _snmp.Text = sn == null
+            ? (_app.Settings.SnmpTest ? (_app.Busy ? "Starting…" : "Runs during the test: polls to UDP 161, informs to UDP 162.") : "Off (Settings)")
+            : sn.Error != null ? sn.Error
+            : string.Join(Environment.NewLine + Environment.NewLine, new[] { sn.Polls, sn.Informs }.Where(c => c != null).Select(c => char.ToUpperInvariant(c!.Text[0]) + c.Text[1..]));
     }
 
     void ShowConnection(ConnectionInfo c)

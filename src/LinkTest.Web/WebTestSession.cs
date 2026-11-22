@@ -5,6 +5,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using LinkTest.Core;
+using LinkTest.Core.Snmp;
 using LinkTest.Server;
 
 namespace LinkTest.Web;
@@ -96,9 +97,9 @@ sealed class WebTestSession : IDisposable
     public string? SavedPath { get; private set; }
 
     public WebTestSession(WebServer web, uint id, TestConfig cfg, IPAddress client, string serverName, string security, string userAgent,
-        Func<JsonObject, Task> send, SpeedPlan? speed = null, double preRttMs = double.NaN)
+        Func<JsonObject, Task> send, SpeedPlan? speed = null, double preRttMs = double.NaN, SnmpRtcBridge? snmp = null)
     {
-        _web = web; _send = send; Speed = speed; PreRttMs = preRttMs;
+        _web = web; _send = send; Speed = speed; PreRttMs = preRttMs; _snmpBridge = snmp;
         _lateUs = double.IsFinite(preRttMs) ? preRttMs * 1000 : 0;
         Id = id; Config = cfg; ClientIp = client; ServerName = serverName; Security = security; UserAgent = userAgent;
         double udpShare = cfg.Protocol switch { TransportKind.Udp => 1, TransportKind.Tcp => 0, _ => cfg.UdpSharePct / 100 };
@@ -109,15 +110,110 @@ sealed class WebTestSession : IDisposable
         UpTcpMbps = cfg.UpMbps - UpUdpMbps; DownTcpMbps = cfg.DownMbps - DownUdpMbps;
         Streams = Math.Clamp(cfg.Streams, 1, 8);
         WarmupSec = UpUdpMbps + DownUdpMbps > 0 && PreRttMs > 250 ? (int)Math.Ceiling(PreRttMs / 1000 * 6) : 0;
+        if (snmp != null)
+        {
+            _snmpRun = new SnmpRun("linktest-web", snmp.Snmp.PollPort, snmp.Snmp.TrapPort, "WebRTC data channel",
+                (i, b) => _snmpLinks[i]?.TrySend(b, maxBuffered: 0));
+            _snmpRun.Polls.Connected = _snmpRun.Informs.Connected = false;
+            _snmpRun.Event += Event;
+        }
         Event($"Browser test from {client} ({BrowserName(userAgent)}): {Describe()}");
+        if (_snmpRun != null)
+        {
+            Event($"SNMP test: WebRTC to UDP {snmp!.Snmp.PollPort} (polls every {SnmpRun.PollIntervalMs / 1000} s) and UDP {snmp.Snmp.TrapPort} " +
+                  $"(informs every {SnmpRun.InformIntervalMs / 1000} s), {SnmpRun.TimeoutMs / 1000} s timeout, {SnmpRun.Retries} retries");
+            Event($"SNMP test: browsers can't connect to ports below 1024, so this uses the server's browser SNMP ports instead of " +
+                  $"UDP {SnmpRun.DefaultPollPort} / {SnmpRun.DefaultTrapPort}; the LinkTest apps test those with real SNMP");
+        }
         if (double.IsFinite(preRttMs)) Event($"Round-trip time before the test: {preRttMs:0} ms");
         if (WarmupSec > 0) Event($"High latency: the first {WarmupSec} s of traffic are left out while the WebRTC channel's congestion window opens");
         if (speed is { RampSec: > 2 }) Event($"High latency: {speed.RampSec} s of each phase left out as TCP ramp-up; {speed.DownSec} s download / {speed.UpSec} s upload");
     }
 
+    // ───────────── SNMP test (WebRTC on UDP 161 / 162) ─────────────
+
+    readonly SnmpRtcBridge? _snmpBridge;
+    readonly SnmpRun? _snmpRun;
+    readonly WebRtcLink?[] _snmpLinks = new WebRtcLink?[2];
+    readonly string?[] _snmpErrors = new string?[2];
+    readonly List<(string c, string? mid)>[] _snmpEarly = { new(), new() };
+    SnmpResult? _snmpResult;
+    public bool SnmpTest => _snmpRun != null;
+
+    SnmpChannel SnmpChannelOf(int i) => i == 0 ? _snmpRun!.Polls : _snmpRun!.Informs;
+
+    /// <summary>Answers the page's offer for the SNMP poll (0) or notification (1) connection.</summary>
+    public async Task<string> AnswerSnmpAsync(int i, string offer, IEnumerable<IPAddress> pageAddresses)
+    {
+        if (_snmpBridge == null || _snmpRun == null || _snmpLinks[i] != null) throw new InvalidOperationException("no SNMP test");
+        int port = _snmpBridge.Snmp.Ports[i];
+        if (port == 0) throw new InvalidOperationException($"the server's UDP {(i == 0 ? SnmpRun.DefaultPollPort : SnmpRun.DefaultTrapPort)} isn't open");
+        // Bound to loopback: its only path is through the bridge, from the SNMP port.
+        var link = _snmpLinks[i] = new WebRtcLink(_snmpBridge.LoopbackPort, IPAddress.Loopback);
+        link.Packet += p => { if (_running) _snmpRun.OnPacket(i, p, Clock.NowUs); };
+        link.Closed += why => { if (_running && !_stopped) Event($"SNMP WebRTC connection on UDP {port} {why}"); };
+        string answer = await link.AnswerAsync(offer, _cts.Token);
+        lock (_snmpEarly[i])
+        {
+            foreach (var (c, mid) in _snmpEarly[i]) link.AddRemoteCandidate(c, mid);
+            _snmpEarly[i].Clear();
+        }
+        // Its own candidates are loopback ones: leave them out, offer the server's addresses on the SNMP port instead.
+        answer = string.Join("\r\n", answer.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => !l.StartsWith("a=candidate:", StringComparison.Ordinal)));
+        string label = i == 0 ? "snmp-poll" : "snmp-trap";
+        foreach (var (c, mid) in WebRtcLink.ExtraCandidates(answer, pageAddresses.Concat(WebServer.ServerAddresses()), port))
+            _ = _send(new JsonObject { ["t"] = "cand", ["link"] = label, ["c"] = c, ["mid"] = mid });
+        _ = WatchSnmpLinkAsync(i, link, port);
+        return answer;
+    }
+
+    async Task WatchSnmpLinkAsync(int i, WebRtcLink link, int port)
+    {
+        long t0 = Clock.NowUs;
+        try
+        {
+            await link.Opened.WaitAsync(TimeSpan.FromSeconds(30), _cts.Token);
+            SnmpChannelOf(i).Connected = true;
+            Event($"SNMP test: WebRTC connected on UDP {port} after {(Clock.NowUs - t0) / 1e6:0.0} s" + (link.SelectedPair is { } p ? $" ({p})" : ""));
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+        catch (Exception e)
+        {
+            SnmpSetupFailed(i, e is TimeoutException ? $"no WebRTC connection on UDP {port} within 30 s - the port looks blocked" : e.Message);
+        }
+    }
+
+    public void AddSnmpCandidate(int i, string c, string? mid)
+    {
+        lock (_snmpEarly[i])
+        {
+            if (_snmpLinks[i] is { HasRemoteDescription: true } link) link.AddRemoteCandidate(c, mid);
+            else _snmpEarly[i].Add((c, mid));
+        }
+    }
+
+    public void SnmpSetupFailed(int i, string why)
+    {
+        if (_snmpErrors[i] != null) return;
+        _snmpErrors[i] = why;
+        Event("SNMP test: " + why);
+    }
+
+    SnmpResult? StopSnmp()
+    {
+        if (_snmpRun == null) return null;
+        if (_snmpResult != null) return _snmpResult;
+        _snmpRun.Dispose();
+        var r = _snmpRun.Result();
+        if (r.Polls != null && _snmpErrors[0] != null && r.Polls.Requests == 0) r.Polls.Connected = false;
+        if (r.Informs != null && _snmpErrors[1] != null && r.Informs.Requests == 0) r.Informs.Connected = false;
+        return _snmpResult = r;
+    }
+
     public string Describe()
     {
         var c = Config;
+        if (Speed == null && c.UpMbps + c.DownMbps <= 0 && SnmpTest) return $"SNMP test (WebRTC on UDP {_snmpBridge!.Snmp.PollPort} and {_snmpBridge.Snmp.TrapPort})" + (c.DurationSec > 0 ? $", {c.DurationSec} s" : "");
         if (Speed is { } sp) return $"speed test, {Streams} TCP connection(s): {sp.DownSec} s download, then {sp.UpSec} s upload";
         string what = c.Protocol switch
         {
@@ -267,6 +363,7 @@ sealed class WebTestSession : IDisposable
         if (DownUdpMbps > 0 && Rtc != null)
             new Thread(UdpSendLoop) { IsBackground = true, Name = $"web-udp-{Id:X8}", Priority = ThreadPriority.AboveNormal }.Start();
         _ = TickLoopAsync();
+        _snmpRun?.Start();
         _ = LookupClientAsync();      // reverse DNS always; ipinfo.io unless --no-ip-lookup
         ServerHost.Log($"Browser test {Id:X8} from {ClientIp} started: {Describe()}");
     }
@@ -495,7 +592,20 @@ sealed class WebTestSession : IDisposable
             Event($"{sec:0} s: {Mb(blocked):0.##} Mb of download not sent - the WebRTC channel's congestion control held it back");
         var json = SampleJson(s, Mb(blocked));
         json["phase"] = phase;
+        if (_snmpRun != null) json["snmp"] = SnmpJson(_snmpRun.Result());
         await _send(json);
+    }
+
+    JsonObject SnmpJson(SnmpResult r)
+    {
+        JsonObject? Ch(SnmpChannelResult? c, int i) => c == null ? null : new JsonObject
+        {
+            ["port"] = c.Port, ["connected"] = c.Connected && _snmpErrors[i] == null || c.Requests > 0, ["error"] = c.Requests == 0 ? _snmpErrors[i] : null,
+            ["requests"] = c.Requests, ["answered"] = c.Answered, ["firstTry"] = c.AnsweredFirstTry, ["failed"] = c.Failed,
+            ["resp"] = N(c.ResponseAvgMs), ["p95"] = N(c.ResponseP95Ms), ["max"] = N(c.ResponseMaxMs), ["loss"] = N(c.PacketLossPct),
+            ["verdict"] = c.Verdict, ["text"] = c.Text,
+        };
+        return new JsonObject { ["poll"] = Ch(r.Polls, 0), ["trap"] = Ch(r.Informs, 1) };
     }
 
     static double Z(double v) => double.IsFinite(v) ? v : 0;
@@ -544,6 +654,7 @@ sealed class WebTestSession : IDisposable
                 ["t"] = "done", ["reason"] = reason,
                 ["file"] = SavedPath != null ? Path.GetFileName(SavedPath) : null,
                 ["summary"] = rec?.Summary,
+                ["snmp"] = rec?.Snmp is { } snmpRes ? SnmpJson(snmpRes) : null,
                 ["speed"] = speed == null ? null : new JsonObject
                 {
                     ["down"] = N(speed.DownMbps), ["up"] = N(speed.UpMbps), ["downPeak"] = N(speed.DownPeakMbps), ["upPeak"] = N(speed.UpPeakMbps),
@@ -613,6 +724,7 @@ sealed class WebTestSession : IDisposable
             Connection = new ConnectionInfo(ServerName, $"web browser ({BrowserName(UserAgent)})", ClientIp.ToString(), "–",
                 info, info, true, null, Security),
             WarmupSec = WarmupSec,
+            Snmp = StopSnmp(),
             Family = ClientIp.IsIPv4MappedToIPv6 || ClientIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? "IPv4" : "IPv6",
         };
         lock (_events)
@@ -620,6 +732,7 @@ sealed class WebTestSession : IDisposable
             rec.Events = _events.ToList();
             rec.Events.Insert(0, "Browser: " + UserAgent);
             if (Rtc?.SelectedPair is { } pair) rec.Events.Insert(1, "WebRTC path: " + pair);
+            if (rec.Snmp != null) rec.Events.Add(rec.Snmp.Summary);
         }
         if (Speed is { } sp)
         {
@@ -656,11 +769,20 @@ sealed class WebTestSession : IDisposable
         if (double.IsFinite(r.UpLossPct) || double.IsFinite(r.DownLossPct)) parts.Add($"loss {F(r.UpLossPct, "0.##")} / {F(r.DownLossPct, "0.##")} %");
         if (double.IsFinite(r.MosAvg)) parts.Add($"MOS {F(r.MosAvg, "0.0")}");
         if (r.BloatGrade != null) parts.Add($"bufferbloat {r.BloatGrade}");
-        if (r.Speed is { } sp) return "Speed test: " + sp.Summary + (r.BloatGrade != null ? $", bufferbloat {r.BloatGrade}" : "");
-        return "Browser test: " + string.Join(", ", parts);
+        string snmp = r.Snmp is { } sn ? " · " + SnmpShort(sn) : "";
+        if (r.Speed is { } sp) return "Speed test: " + sp.Summary + (r.BloatGrade != null ? $", bufferbloat {r.BloatGrade}" : "") + snmp;
+        if (r.Config.UpMbps + r.Config.DownMbps <= 0 && r.Snmp != null) return "SNMP test: " + SnmpShort(r.Snmp)[5..] + $", RTT {F(r.RttAvgMs, "0.0")} ms";
+        return "Browser test: " + string.Join(", ", parts) + snmp;
     }
 
-    public SessionSnapshot Snapshot() => new(Id, ClientIp.ToString(), "web", Speed != null ? "Web speed test" : Config.Protocol == TransportKind.Tcp ? "Web TCP" : Config.Protocol == TransportKind.Mixed ? "Web mixed" : "Web UDP",
+    static string SnmpShort(SnmpResult r)
+    {
+        string Ch(SnmpChannelResult? c, string what) => c == null ? "" : !c.Connected || c.Answered == 0 ? $"{what} UDP {c.Port} {c.Verdict}"
+            : $"{what} UDP {c.Port} {c.Answered}/{c.Requests} answered, {c.ResponseAvgMs:0} ms";
+        return "SNMP " + string.Join("; ", new[] { Ch(r.Polls, "polls"), Ch(r.Informs, "informs") }.Where(x => x.Length > 0));
+    }
+
+    public SessionSnapshot Snapshot() => new(Id, ClientIp.ToString(), "web", Speed != null ? "Web speed test" : Config.UpMbps + Config.DownMbps <= 0 && SnmpTest ? "Web SNMP" : Config.Protocol == TransportKind.Tcp ? "Web TCP" : Config.Protocol == TransportKind.Mixed ? "Web mixed" : "Web UDP",
         StartedAt, IsRunning, Interlocked.Read(ref _rxTotal), Interlocked.Read(ref _txTotal), _upLostTotal, _upExpTotal, _lastRttMs,
         UsesUdp && UsesTcp ? 2 : 1, _clientInfo, null, null, Security.StartsWith("HTTPS") ? Security : null);   // 🔒 only when encrypted
 
@@ -669,6 +791,8 @@ sealed class WebTestSession : IDisposable
         _stopped = true;
         try { _cts.Cancel(); } catch { }
         Rtc?.Dispose();
+        _snmpRun?.Dispose();
+        foreach (var l in _snmpLinks) l?.Dispose();
         _web.Unregister(this);
     }
 }

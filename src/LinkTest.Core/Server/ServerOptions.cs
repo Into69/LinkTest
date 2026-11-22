@@ -28,6 +28,18 @@ public sealed class ServerOptions
     public static string DefaultWebResultsFolder =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinkTest", "web-results");
 
+    /// <summary>SNMP test: agent port (UDP 161 by default; 0 = off).</summary>
+    public int SnmpPort { get; set; } = Core.Snmp.SnmpRun.DefaultPollPort;
+    /// <summary>SNMP test: notification port (UDP 162 by default; 0 = off).</summary>
+    public int SnmpTrapPort { get; set; } = Core.Snmp.SnmpRun.DefaultTrapPort;
+    /// <summary>
+    /// Browser SNMP test ports (UDP 1161 / 1162 by default; 0 = off). Browsers refuse WebRTC to ports below 1024, so the
+    /// browser test can't use 161 / 162 and uses these instead.
+    /// </summary>
+    public int WebSnmpPort { get; set; } = DefaultWebSnmpPort;
+    public int WebSnmpTrapPort { get; set; } = DefaultWebSnmpTrapPort;
+    public const int DefaultWebSnmpPort = 1161, DefaultWebSnmpTrapPort = 1162;
+
     public bool AutoUpdate { get; set; }
     public bool NoUpdateCheck { get; set; }
     public bool UpdateNow { get; set; }
@@ -66,6 +78,11 @@ public sealed class ServerOptions
                         if (o.WebPort == 0) o.WebPort = DefaultWebPort;
                         break;
                     case "--web-results": o.WebResultsFolder = Next(); break;
+                    case "--no-snmp": o.SnmpPort = o.SnmpTrapPort = o.WebSnmpPort = o.WebSnmpTrapPort = 0; break;
+                    case "--web-snmp-port": o.WebSnmpPort = int.Parse(Next()); break;
+                    case "--web-snmp-trap-port": o.WebSnmpTrapPort = int.Parse(Next()); break;
+                    case "--snmp-port": o.SnmpPort = int.Parse(Next()); break;
+                    case "--snmp-trap-port": o.SnmpTrapPort = int.Parse(Next()); break;
                     case "--no-ip-lookup": o.NoIpLookup = true; break;
                     case "--no-update-check": o.NoUpdateCheck = true; break;
                     case "--update": o.UpdateNow = true; break;
@@ -77,7 +94,13 @@ public sealed class ServerOptions
             catch (Exception e) { Console.Error.WriteLine(e.Message); return null; }
         }
         static bool Ok(int p, bool optional) => (optional && p == 0) || p is > 0 and < 65536;
-        if (!Ok(o.Port, false) || !Ok(o.WebPort, true) || !Ok(o.WebHttpsPort, true)) return null;
+        if (!Ok(o.Port, false) || !Ok(o.WebPort, true) || !Ok(o.WebHttpsPort, true) || !Ok(o.SnmpPort, true) || !Ok(o.SnmpTrapPort, true)
+            || !Ok(o.WebSnmpPort, true) || !Ok(o.WebSnmpTrapPort, true)) return null;
+        if (o.SnmpPort != 0 && o.SnmpPort == o.SnmpTrapPort)
+        {
+            Console.Error.WriteLine("The SNMP agent and notification ports must differ.");
+            return null;
+        }
         if (o.WebPort != 0 && (o.WebPort == o.Port || o.WebPort == o.WebHttpsPort))
         {
             Console.Error.WriteLine("The web port must differ from --port and the HTTPS port.");

@@ -4,6 +4,53 @@ using LinkTest.Core.Tunnels;
 
 namespace LinkTest.Tests;
 
+public class SnmpTests
+{
+    [Fact]
+    public void Codec_round_trips_requests()
+    {
+        var b = LinkTest.Core.Snmp.SnmpCodec.Build("linktest-abc", LinkTest.Core.Snmp.SnmpCodec.InformRequest, 123456789, new[]
+        {
+            LinkTest.Core.Snmp.SnmpVarBind.TimeTicks(LinkTest.Core.Snmp.SnmpCodec.SysUpTime, 4_000_000_000),
+            LinkTest.Core.Snmp.SnmpVarBind.ObjectId(LinkTest.Core.Snmp.SnmpCodec.SnmpTrapOid, LinkTest.Core.Snmp.SnmpCodec.LinkUpTrap),
+            LinkTest.Core.Snmp.SnmpVarBind.Text("1.3.6.1.2.1.1.1.0", new string('x', 300)),     // long-form lengths
+        });
+        Assert.Equal(0x30, b[0]);
+        Assert.True(LinkTest.Core.Snmp.SnmpCodec.TryParse(b, out var m));
+        Assert.Equal(1, m!.Version);
+        Assert.Equal("linktest-abc", m.Community);
+        Assert.Equal(LinkTest.Core.Snmp.SnmpCodec.InformRequest, m.PduType);
+        Assert.Equal(123456789, m.RequestId);
+        Assert.Equal(3, m.VarBinds.Count);
+        Assert.Equal(LinkTest.Core.Snmp.SnmpCodec.SnmpTrapOid, m.VarBinds[1].Oid);
+        Assert.Equal(300, m.VarBinds[2].Value.Length);
+        Assert.False(LinkTest.Core.Snmp.SnmpCodec.TryParse(b.AsSpan(0, b.Length - 1), out _));
+        Assert.False(LinkTest.Core.Snmp.SnmpCodec.TryParse(new byte[] { 0x30, 0x03, 0x02, 0x01 }, out _));
+    }
+
+    [Fact]
+    public void Channel_retries_then_gives_up()
+    {
+        var sent = new List<int>();
+        var ch = new LinkTest.Core.Snmp.SnmpChannel("poll", 161, 1000, 1000, 2, id => BitConverter.GetBytes(id), b => sent.Add(BitConverter.ToInt32(b)));
+        long t = 0;
+        void At(double sec) { t = (long)(sec * 1e6); ch.Tick(t); }
+        At(0);                    // request 1
+        At(1.0);                  // retry 1 of request 1, request 2
+        ch.OnAnswer(sent[^1], (long)(1.2e6));    // request 2 answered at the first try
+        At(2.0);                  // retry 2 of request 1, request 3
+        ch.OnAnswer(sent[^1], (long)(2.1e6));    // request 3 answered
+        At(3.0);                  // request 1 gives up; request 4
+        var r = ch.Result();
+        Assert.Equal(3, r.Requests);
+        Assert.Equal(2, r.Answered);
+        Assert.Equal(1, r.Failed);
+        Assert.Equal(2, r.AnsweredFirstTry);
+        Assert.Equal(100.0 * 3 / 5, r.PacketLossPct, 3);    // 5 datagrams of finished requests, 2 answered
+        Assert.Equal(150, r.ResponseAvgMs, 3);
+    }
+}
+
 public class ProtocolTests
 {
     [Fact]

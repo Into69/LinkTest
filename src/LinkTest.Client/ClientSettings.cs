@@ -25,6 +25,8 @@ sealed class ClientSettings
     public bool CapacityTest { get; set; }
     public double CapacityPct { get; set; } = 80;
     public bool MeasureMtu { get; set; } = true;
+    /// <summary>SNMP test: polls to the server's UDP 161 and informs to UDP 162 during the test.</summary>
+    public bool SnmpTest { get; set; }
     public bool AutoTraceroute { get; set; } = true;
     public string ResultsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "LinkTest", "Results");
 

@@ -24,24 +24,33 @@ const PRESETS = {
             hint: 'One G.711 voice call each way (a 200-byte packet every 20 ms). Watch loss, jitter and MOS.' },
   game:   { label: 'Gaming', protocol: 'udp', profile: 'constant', upMbps: 0.25, downMbps: 0.5, durationSec: 60, packetSize: 200,
             hint: 'Small, frequent packets like an online game. Latency and jitter matter more than throughput.' },
+  snmp:   { label: 'SNMP', protocol: 'udp', profile: 'constant', upMbps: 0, downMbps: 0, durationSec: 60, baselineSec: 0, snmp: true,
+            hint: "SNMP-style monitoring only: polls to the server once a second and informs every 5 s, with an SNMP manager's timers (1 s timeout, 5 retries), on the server's browser SNMP ports (UDP 1161 / 1162; browsers can't use 161 / 162). The LinkTest apps test UDP 161 / 162 with real SNMP." },
   mixed:  { label: 'Mixed', protocol: 'mixed', profile: 'constant', upMbps: 10, downMbps: 20, durationSec: 30, udpSharePct: 30, streams: 2,
             hint: '30% UDP-style real-time traffic sharing the link with 70% TCP bulk traffic.' },
   custom: { label: 'Custom', hint: 'Your own settings.' },
 };
 const DEFAULTS = { protocol: 'udp', profile: 'constant', upMbps: 5, downMbps: 10, durationSec: 30, baselineSec: 3, packetSize: 1200,
-                   streams: 1, udpSharePct: 30, burstOnMs: 200, burstOffMs: 800, downSec: 10, upSec: 10 };
+                   streams: 1, udpSharePct: 30, burstOnMs: 200, burstOffMs: 800, downSec: 10, upSec: 10, snmp: false };
 const FIELDS = Object.keys(DEFAULTS);
 
 function readForm() {
   const c = {};
   for (const f of FIELDS) {
     const el = $(f);
+    if (el.type === 'checkbox') { c[f] = el.checked; continue; }
     c[f] = el.tagName === 'SELECT' ? el.value : Number(el.value);
     if (el.tagName !== 'SELECT' && !Number.isFinite(c[f])) c[f] = DEFAULTS[f];
   }
   return c;
 }
-function writeForm(c) { for (const f of FIELDS) if (c[f] !== undefined) $(f).value = c[f]; updateVisibility(); }
+function writeForm(c) {
+  for (const f of FIELDS) {
+    if (c[f] === undefined) continue;
+    if ($(f).type === 'checkbox') $(f).checked = !!c[f] && !$(f).disabled; else $(f).value = c[f];
+  }
+  updateVisibility();
+}
 
 function updateVisibility() {
   const p = $('protocol').value, prof = $('profile').value, speed = p === 'speed';
@@ -51,7 +60,7 @@ function updateVisibility() {
       : f === 'udp' ? (speed || p === 'tcp' || prof === 'voip') : f === 'tcp' ? p === 'udp' : f === 'mixed' ? p !== 'mixed'
       : f === 'bursty' ? (speed || prof !== 'bursty') : false;
   });
-  if (!test) { buildTiles(speed ? 'speed' : 'normal'); $('lossCard').hidden = speed; }
+  if (!test) { buildTiles(speed ? 'speed' : 'normal'); $('lossCard').hidden = speed; $('snmpCard').hidden = !$('snmp').checked; }
 }
 
 function applyPreset(name, save = true) {
@@ -255,8 +264,8 @@ function onMessage(m) {
       updateStart();
       break;
     case 'started': setupTest(m).catch(err => { status(err.message, true); send({ t: 'stop' }); cleanupTest(); }); break;
-    case 'answer': test?.onAnswer?.(m.sdp); break;
-    case 'cand': test?.onCandidate?.(m.c, m.mid); break;
+    case 'answer': (m.link ? test?.snmpLinks?.[m.link]?.onAnswer : test?.onAnswer)?.(m.sdp); break;
+    case 'cand': (m.link ? test?.snmpLinks?.[m.link]?.onCandidate : test?.onCandidate)?.(m.c, m.mid); break;
     case 'go': beginLoad(); break;
     case 'pong':
       if (!fin(m.id)) break;
@@ -282,7 +291,8 @@ function startTest() {
   buildTiles(cfg.protocol === 'speed' ? 'speed' : 'normal');
   resetTiles();
   Object.values(charts).forEach(c => c.clear());
-  test = { cfg, go: false, rtt: [], bulk: [], cands: [], remoteSet: false, stopRequested: false };
+  test = { cfg, go: false, rtt: [], bulk: [], cands: [], remoteSet: false, stopRequested: false, snmpLinks: {} };
+  resetSnmp(cfg.snmp);
   updateStart();
   status('Setting up…');
   const rtt = median(idleRtt);
@@ -300,6 +310,8 @@ async function setupTest(st) {
     if (st.upTcp > 0) jobs.push(openBulk(t, 'up'));
     if (st.downTcp > 0) jobs.push(openBulk(t, 'down'));
   }
+  // SNMP: its own WebRTC connections to UDP 161 and 162. Not waited for: a blocked port is a result.
+  if (st.snmp) for (const link of ['snmp-poll', 'snmp-trap']) setupSnmp(t, link, link === 'snmp-poll' ? st.snmp.poll : st.snmp.trap);
   status(st.udp ? 'Opening the WebRTC connection…' : 'Connecting…');
   await Promise.all(jobs);
   if (test !== t) return;
@@ -331,6 +343,67 @@ function setupRtc(t) {
     };
     pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => send({ t: 'offer', sdp: pc.localDescription.sdp })).catch(reject);
   });
+}
+
+// The SNMP test's connection: the server sends SNMP requests over it and the page sends each one straight back.
+function setupSnmp(t, link, port) {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  const dc = pc.createDataChannel(link, { ordered: false, maxRetransmits: 0 });
+  dc.binaryType = 'arraybuffer';
+  const l = t.snmpLinks[link] = { pc, dc, cands: [], remoteSet: false, port };
+  dc.onmessage = e => { try { dc.send(e.data); } catch { } };
+  dc.onopen = () => { if (test === t) snmpRow(link, 'connected', 'waiting for the first poll…'); };
+  pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) send({ t: 'cand', link, c: e.candidate.candidate, mid: e.candidate.sdpMid }); };
+  l.onAnswer = async sdp => {
+    try {
+      await pc.setRemoteDescription({ type: 'answer', sdp });
+      l.remoteSet = true;
+      for (const [c, mid] of l.cands) pc.addIceCandidate({ candidate: c, sdpMid: mid ?? '0' }).catch(() => { });
+      l.cands = [];
+    } catch (err) { snmpRow(link, 'error', err.message); }
+  };
+  l.onCandidate = (c, mid) => {
+    if (l.remoteSet) pc.addIceCandidate({ candidate: c, sdpMid: mid ?? '0' }).catch(() => { });
+    else l.cands.push([c, mid]);
+  };
+  snmpRow(link, 'connecting', `opening WebRTC to UDP ${port}…`);
+  pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => send({ t: 'offer', link, sdp: pc.localDescription.sdp }))
+    .catch(err => snmpRow(link, 'error', err.message));
+}
+
+function resetSnmp(on) {
+  $('snmpCard').hidden = !on;
+  for (const link of ['snmp-poll', 'snmp-trap']) snmpRow(link, '', on ? 'starting…' : '');
+}
+
+const SNMP_STATES = { ok: ['OK', 'good'], warn: ['Timeouts', 'fair'], bad: ['Blocked', 'poor'], error: ['Error', 'poor'],
+                      connected: ['Connected', ''], connecting: ['Connecting', ''] };
+function snmpRow(link, state, text) {
+  const row = $(link);
+  if (!row) return;
+  const [label, cls] = SNMP_STATES[state] || ['–', ''];
+  const el = row.querySelector('.state');
+  el.textContent = label;
+  el.className = 'state ' + cls;
+  row.querySelector('.detail').textContent = text;
+}
+
+function showSnmp(snmp, final = false) {
+  if (!snmp) return;
+  for (const [link, c] of [['snmp-poll', snmp.poll], ['snmp-trap', snmp.trap]]) {
+    if (!c) continue;
+    const what = link === 'snmp-poll' ? 'polls' : 'informs';
+    if (!c.requests) {
+      if (c.error) snmpRow(link, final || !c.connected ? 'bad' : 'connecting', c.error);
+      else if (final) snmpRow(link, 'bad', c.verdict);
+      continue;
+    }
+    const state = c.answered === 0 ? 'bad' : c.failed > 0 ? 'warn' : 'ok';
+    snmpRow(link, state, `${c.answered} / ${c.requests} ${what} answered` + (c.failed > 0 ? ` · ${c.failed} timed out` : '') +
+      (fin(c.resp) ? ` · response ${fmt(c.resp)} ms avg, ${fmt(c.max)} ms max` : '') +
+      (fin(c.loss) && c.loss > 0 ? ` · ${fmt(c.loss)}% of datagrams unanswered` : '') +
+      (c.firstTry < c.answered ? ` · ${c.answered - c.firstTry} needed retries` : ''));
+  }
 }
 
 function openBulk(t, dir) {
@@ -451,6 +524,7 @@ function scheduleSecond(t) {
 
 function onSample(s) {
   const st = test?.st;
+  showSnmp(s.snmp);
   if (st?.speed) { onSpeedSample(test, s); return; }
   const udp = !!st?.udp;
   setTile('up', mbps(s.up), s.tx != null ? `sent ${mbps(s.tx)}` + (s.upUdp != null && st?.upTcp > 0 && st?.upUdp > 0 ? ` · UDP ${mbps(s.upUdp)} · TCP ${mbps(s.upTcp)}` : '') : '');
@@ -507,6 +581,7 @@ function stopTest() {
 function onDone(m) {
   const t = test;
   cleanupTest();
+  showSnmp(m.snmp, true);
   status('Idle · ' + m.reason + (t?.hiddenAt ? ' · the tab was in the background during the test, which can lower the figures' : ''));
   if (m.file) showResult(m);
   loadHistory();
@@ -524,6 +599,7 @@ function cleanupTest() {
     for (const b of t.bulk) try { b.ws.close(); } catch { }
     try { t.dc?.close(); } catch { }
     try { t.pc?.close(); } catch { }
+    for (const l of Object.values(t.snmpLinks || {})) { try { l.dc.close(); } catch { } try { l.pc.close(); } catch { } }
   }
   updateStart();
 }
@@ -627,6 +703,19 @@ async function init() {
       a.href = `https://${location.hostname}:${info.httpsPort}/`;
       a.textContent = 'open the HTTPS page';
       $('httpsLink').append(': ', a);
+    }
+    if (info.snmp) {
+      $('snmpPorts').textContent = `UDP ${info.snmp.poll} and ${info.snmp.trap}`;
+      $('snmpNote').textContent = `UDP ${info.snmp.poll} / ${info.snmp.trap}`;
+      $('snmp-poll').querySelector('.what').textContent = `Polls → UDP ${info.snmp.poll}`;
+      $('snmp-trap').querySelector('.what').textContent = `Informs → UDP ${info.snmp.trap}`;
+    } else {
+      $('snmp').checked = false;
+      $('snmp').disabled = true;
+      $('snmp').parentElement.title = 'The SNMP test is off on this server, or WebRTC is unavailable';
+      document.querySelector('[data-preset=snmp]').disabled = true;
+      if (store.get('preset') === 'snmp') applyPreset('speedtest', false);
+      updateVisibility();
     }
     if (!info.udp) {
       $('protocol').querySelector('option[value=udp]').disabled = true;

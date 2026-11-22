@@ -23,7 +23,11 @@ public sealed class ServerFixture : IAsyncLifetime
         ServerHost.ConsoleOutput = false;
         Clock.EnableHighResolutionTimer();
         Port = FreePort();
-        var host = Host = new ServerHost(new ServerOptions { Port = Port, NoIpLookup = true, MaxSessions = 4, CertificatePath = CertPath }) { PeriodicStatus = false };
+        var host = Host = new ServerHost(new ServerOptions
+        {
+            Port = Port, NoIpLookup = true, MaxSessions = 4, CertificatePath = CertPath,
+            SnmpPort = FreeUdpPort(), SnmpTrapPort = FreeUdpPort(), WebSnmpPort = 0, WebSnmpTrapPort = 0,
+        }) { PeriodicStatus = false };
         _run = Task.Run(() => host.RunAsync(_cts.Token));
         await Task.Delay(500);
         if (_run.IsFaulted) throw new InvalidOperationException("Test server failed to start on port " + Port, _run.Exception);
@@ -47,6 +51,13 @@ public sealed class ServerFixture : IAsyncLifetime
             catch (SocketException) { }
         }
         throw new InvalidOperationException("no free TCP+UDP port");
+    }
+
+    internal static int FreeUdpPort()
+    {
+        using var u = new Socket(AddressFamily.InterNetworkV6, SocketType.Dgram, ProtocolType.Udp) { DualMode = true };
+        u.Bind(new IPEndPoint(IPAddress.IPv6Any, 0));
+        return ((IPEndPoint)u.LocalEndPoint!).Port;
     }
 
     public async Task DisposeAsync()
@@ -189,6 +200,54 @@ public class IntegrationTests
         var welcome = JsonSerializer.Deserialize<ControlMessage>(Encoding.UTF8.GetString(buf, 0, n).Trim(), Json.Options)!;
         Assert.Equal("welcome", welcome.Type);
         Assert.Equal(0, welcome.Config!.BaselineSec);     // old clients don't get an idle baseline
+    }
+
+    [Fact]
+    public async Task Snmp_PollsAndInformsAreAnswered_OnTheServersSnmpPorts()
+    {
+        var session = new ClientSession { MeasureMtu = false, AutoTraceroute = false, SnmpTest = true };
+        await session.StartAsync("127.0.0.1", _server.Port, null, new TestConfig { UpMbps = 1, DownMbps = 1, BaselineSec = 0 },
+            Array.Empty<TunnelProfile>(), 0, CancellationToken.None, ipLookup: false);
+        await Task.Delay(6500);
+        await session.StopAsync("test done");
+        var snmp = session.Record!.Snmp!;
+        Assert.Null(snmp.Error);
+        Assert.Equal("SNMPv2c over UDP", snmp.Transport);
+        Assert.Equal(_server.Host.Snmp!.PollPort, snmp.Polls!.Port);
+        Assert.Equal(_server.Host.Snmp!.TrapPort, snmp.Informs!.Port);
+        Assert.InRange(snmp.Polls.Answered, 5, 8);
+        Assert.Equal(snmp.Polls.Requests, snmp.Polls.Answered);
+        Assert.InRange(snmp.Informs.Answered, 1, 2);
+        Assert.Equal(0, snmp.Polls.Failed + snmp.Informs.Failed);
+        Assert.True(snmp.Ok, snmp.Summary);
+        Assert.Contains("<h2>SNMP</h2>", ReportBuilder.Build(session.Record!));
+        Assert.Contains("SNMP", session.Record!.Summary);
+    }
+
+    [Fact]
+    public async Task Snmp_ServerIgnoresOtherCommunities()
+    {
+        int port = _server.Host.Snmp!.PollPort;
+        using var u = new UdpClient(AddressFamily.InterNetwork);
+        u.Connect(IPAddress.Loopback, port);
+        byte[] get = LinkTest.Core.Snmp.SnmpCodec.Build("public", LinkTest.Core.Snmp.SnmpCodec.GetRequest, 42,
+            new[] { LinkTest.Core.Snmp.SnmpVarBind.Null(LinkTest.Core.Snmp.SnmpCodec.SysUpTime) });
+        await u.SendAsync(get);
+        var recv = u.ReceiveAsync();
+        Assert.NotSame(recv, await Task.WhenAny(recv, Task.Delay(1500)));     // no answer to "public"
+
+        string community = _server.Host.Snmp.Register("test");
+        try
+        {
+            await u.SendAsync(LinkTest.Core.Snmp.SnmpCodec.Build(community, LinkTest.Core.Snmp.SnmpCodec.GetRequest, 43,
+                new[] { LinkTest.Core.Snmp.SnmpVarBind.Null(LinkTest.Core.Snmp.SnmpCodec.SysUpTime) }));
+            var r = await recv.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.True(LinkTest.Core.Snmp.SnmpCodec.TryParse(r.Buffer, out var m));
+            Assert.Equal(LinkTest.Core.Snmp.SnmpCodec.Response, m!.PduType);
+            Assert.Equal(43, m.RequestId);
+            Assert.Equal(LinkTest.Core.Snmp.SnmpVarBind.TagTimeTicks, m.VarBinds[0].Tag);
+        }
+        finally { _server.Host.Snmp.Unregister(community); }
     }
 
     [Fact]

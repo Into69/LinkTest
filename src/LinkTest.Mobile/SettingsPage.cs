@@ -20,7 +20,7 @@ sealed class SettingsPage : ContentPage
     readonly Entry _up = Num(true), _down = Num(true), _size = Num(), _burstOn = Num(), _burstOff = Num(), _streams = Num(), _duration = Num();
     readonly Picker _profile = new() { ItemsSource = Enum.GetNames<TrafficProfile>() };
     readonly Picker _dscp = new() { ItemsSource = DscpItems };
-    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _locationSw = new(), _tlsSw = new(), _capacitySw = new();
+    readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _locationSw = new(), _tlsSw = new(), _capacitySw = new(), _snmpSw = new();
     static readonly string[] FamilyItems = { "Auto (IPv4 first)", "IPv4 only", "IPv6 only", "IPv4, then IPv6 (compare)" };
     readonly Picker _family = new() { ItemsSource = FamilyItems };
     readonly Entry _capacityPct = Num();
@@ -67,6 +67,9 @@ sealed class SettingsPage : ContentPage
         Row("Idle baseline (s) - for the bufferbloat grade, 0 = off", _baseline);
         SwitchRow("Measure path MTU when a test starts", _mtuSw);
         SwitchRow("Traceroute at start and on trouble", _traceSw);
+        SwitchRow("SNMP test (UDP 161 / 162)", _snmpSw);
+        _form.Add(Ui.Hint("Sends real SNMPv2c polls to the server's UDP 161 once a second and informs to UDP 162 every 5 s during the test, " +
+                          "with a management station's timers (1 s timeout, 5 retries). Needs a 1.12+ server. Results on the Details tab."));
         SwitchRow("Report my location with the test", _locationSw);
         _form.Add(Ui.Hint("Off by default. When on, the phone's position (GPS / network) is recorded every 10 s with the test results and reports, " +
                           "and sent to the server. Android asks for location permission at the next test."));
@@ -202,6 +205,7 @@ sealed class SettingsPage : ContentPage
         _keepOn.IsToggled = st.KeepScreenOn;
         _baseline.Text = c.BaselineSec.ToString(CultureInfo.InvariantCulture);
         _mtuSw.IsToggled = st.MeasureMtu;
+        _snmpSw.IsToggled = st.SnmpTest;
         _traceSw.IsToggled = st.AutoTraceroute;
         _locationSw.IsToggled = st.ShareLocation;
         _family.SelectedIndex = st.Family switch { "4" => 1, "6" => 2, "both" => 3, _ => 0 };
@@ -236,6 +240,7 @@ sealed class SettingsPage : ContentPage
         st.KeepScreenOn = _keepOn.IsToggled;
         c.BaselineSec = Int(_baseline, c.BaselineSec, 0, 60);
         st.MeasureMtu = _mtuSw.IsToggled;
+        st.SnmpTest = _snmpSw.IsToggled;
         st.AutoTraceroute = _traceSw.IsToggled;
         st.ShareLocation = _locationSw.IsToggled;
         st.Family = _family.SelectedIndex switch { 1 => "4", 2 => "6", 3 => "both", _ => "auto" };

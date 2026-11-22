@@ -1,3 +1,4 @@
+using LinkTest.Core.Snmp;
 using System.Text.Json;
 using LinkTest.Core;
 using LinkTest.Core.Tunnels;
@@ -27,6 +28,8 @@ sealed class MobileSettings
     public bool CapacityTest { get; set; }
     public double CapacityPct { get; set; } = 80;
     public bool MeasureMtu { get; set; } = true;
+    /// <summary>SNMP test: polls to the server's UDP 161 and informs to UDP 162 during the test.</summary>
+    public bool SnmpTest { get; set; }
     public bool AutoTraceroute { get; set; } = true;
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
 
@@ -81,6 +84,9 @@ sealed class AppController
     /// <summary>Path MTU or a traceroute result arrived.</summary>
     public event Action? PathChanged;
     public MtuResult? Mtu { get; private set; }
+    SnmpResult? _lastSnmp;
+    /// <summary>SNMP test figures of the running or last test (null when off).</summary>
+    public SnmpResult? Snmp => Session?.Snmp ?? _lastSnmp;
     public IReadOnlyList<TraceResult> Traces => _traces;
     readonly List<TraceResult> _traces = new();
 
@@ -161,6 +167,7 @@ sealed class AppController
         session.MtuMeasured += m => OnUi(() => { Mtu = m; PathChanged?.Invoke(); });
         session.TraceCompleted += t => OnUi(() => { _traces.Add(t); if (_traces.Count > 10) _traces.RemoveAt(0); PathChanged?.Invoke(); });
         session.MeasureMtu = st.MeasureMtu;
+        session.SnmpTest = st.SnmpTest;
         session.AutoTraceroute = st.AutoTraceroute;
         session.Family = family;
         session.UseTls = true;
@@ -170,6 +177,7 @@ sealed class AppController
         session.CapacityTargetPct = st.CapacityPct;
         session.CapacityMeasured += () => OnUi(() => SetStatus($"Running · {session.Config} (capacity up {Cap(session.CapacityUpMbps, session.CapacityUpAtLimit)} / down {Cap(session.CapacityDownMbps, session.CapacityDownAtLimit)})"));
         Mtu = null;
+        _lastSnmp = null;
         _traces.Clear();
         Connecting = true;
         LastSample = null;
@@ -316,6 +324,7 @@ sealed class AppController
             try { Results.Save(rec); Log("Result saved - see the History tab to share the report."); HistoryChanged?.Invoke(); }
             catch (Exception e) { Log("Could not save the result: " + e.Message); }
         }
+        _lastSnmp = session.Snmp;
         session.Dispose();
         Session = null;
         SetKeepScreenOn(false);

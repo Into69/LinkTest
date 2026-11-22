@@ -129,6 +129,13 @@ public static class ReportBuilder
             Card(sb, "Capacity ↑ / ↓", $"{N(r.CapacityUpMbps, "0.#")} / {N(r.CapacityDownMbps, "0.#")} Mbps",
                 (r.CapacityUpAtLimit || r.CapacityDownAtLimit ? "≥ = didn't saturate; " : "") + $"tested at {N(r.Config.UpMbps, "0.#")} / {N(r.Config.DownMbps, "0.#")}");
         if (r.Mtu is { Ok: true } m) Card(sb, "Path MTU", $"{m.PathMtu} B", $"up {m.UpPathMtu} / down {m.DownPathMtu}", m.PathMtu < 1500 && !m.Ipv6 ? "warn" : null);
+        if (r.Snmp is { Error: null } sn)
+        {
+            var chans = new[] { sn.Polls, sn.Informs }.Where(c => c != null).Select(c => c!).ToList();
+            int req = chans.Sum(c => c.Requests), ans = chans.Sum(c => c.Answered), failed = chans.Sum(c => c.Failed);
+            Card(sb, "SNMP answered", req > 0 ? $"{ans} / {req}" : "–", "UDP " + string.Join(" / ", chans.Select(c => c.Port)) + (failed > 0 ? $", {failed} timed out" : ""),
+                req == 0 || ans == 0 ? "bad" : failed > 0 || chans.Any(c => c.AnsweredFirstTry < c.Answered) ? "warn" : "good");
+        }
         if (r.Tunnels.Count > 0)
         {
             int drops = r.Tunnels.Sum(t => t.Drops);
@@ -267,6 +274,27 @@ public static class ReportBuilder
             sb.Append("</table></div>");
         }
 
+        if (r.Snmp is { } snmp)
+        {
+            sb.Append($"<h2>SNMP</h2><div class=\"panel\"><p style=\"margin:0 0 8px\">{E(snmp.Error != null ? snmp.Summary : SnmpIntro(snmp))}</p>");
+            if (snmp.Error == null)
+            {
+                sb.Append("<table><tr><th>Requests</th><th>Result</th><th class=n>Answered</th><th class=n>First try</th><th class=n>Timed out</th>" +
+                          "<th class=n>Response avg</th><th class=n>95th pct</th><th class=n>Max</th><th class=n>Datagrams unanswered</th><th class=n>Longest outage</th></tr>");
+                foreach (var sc in new[] { snmp.Polls, snmp.Informs })
+                {
+                    if (sc == null) continue;
+                    string cls = !sc.Reachable ? "bad" : sc.Failed > 0 || sc.AnsweredFirstTry < sc.Answered ? "warn" : "good";
+                    string what = sc.Kind == "inform" ? $"Informs → UDP {sc.Port}" : $"Polls → UDP {sc.Port}";
+                    sb.Append($"<tr><td>{E(what)}</td><td class=\"{cls}\">{E(sc.Verdict)}</td><td class=n>{sc.Answered} / {sc.Requests}</td><td class=n>{sc.AnsweredFirstTry}</td>" +
+                              $"<td class=n>{sc.Failed}</td><td class=n>{U(sc.ResponseAvgMs, "0.0", " ms")}</td><td class=n>{U(sc.ResponseP95Ms, "0.0", " ms")}</td>" +
+                              $"<td class=n>{U(sc.ResponseMaxMs, "0.0", " ms")}</td><td class=n>{U(sc.PacketLossPct, "0.##", " %")}</td><td class=n>{U(sc.LongestOutageSec, "0", " s")}</td></tr>");
+                }
+                sb.Append("</table>");
+            }
+            sb.Append("</div>");
+        }
+
         if (r.Mtu is { } mtu)
         {
             sb.Append($"<h2>Path MTU</h2><div class=\"panel\"><p style=\"margin:0 0 8px\">{E(mtu.Summary)}</p>");
@@ -301,6 +329,15 @@ public static class ReportBuilder
 
     static void Card(StringBuilder sb, string k, string v, string d, string? cls = null) =>
         sb.Append($"<div class=\"card\"><div class=\"k\">{E(k)}</div><div class=\"v{(cls != null ? " " + cls : "")}\">{E(v)}</div><div class=\"d\">{E(d)}</div></div>");
+
+    internal static string SnmpIntro(Snmp.SnmpResult s)
+    {
+        var c = s.Polls ?? s.Informs;
+        string timers = c == null ? "" : $" A request not answered within {c.TimeoutMs / 1000.0:0.#} s is sent again, up to {c.Retries} times, then counted as timed out.";
+        return s.Transport.StartsWith("WebRTC")
+            ? "Browser test: SNMP-style polls once a second and informs every 5 s over WebRTC to the server's browser SNMP ports (browsers can't connect to ports below 1024, so UDP 161 / 162 can't be tested from a browser; the LinkTest apps test them with real SNMP)." + timers
+            : "SNMPv2c GetRequests to the server's agent port once a second and InformRequests to its notification port every 5 s, like a network management station." + timers;
+    }
 
     static string CapText(double v, bool atLimit) => double.IsFinite(v) ? $"{(atLimit ? "at least " : "")}{N(v, "0.##")} Mbps" : "not tested";
 

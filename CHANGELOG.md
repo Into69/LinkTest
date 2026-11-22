@@ -2,6 +2,24 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.12.0]
+
+### New
+- **SNMP test.** Turn on *SNMP test* in the apps' settings, or use `--snmp` in the CLI. During the test,
+  the client sends real SNMPv2c GetRequests to the server's UDP 161 once a second and InformRequests to
+  UDP 162 every 5 s, with an SNMP manager's timers (1 s timeout, 5 retries). It shows whether SNMP gets
+  through, how fast it's answered, and how many requests needed retries or timed out. Results are on the
+  *Path* tab (Android: *Details*) and in the HTML and PDF reports.
+  - The server answers SNMP on UDP 161 and 162 by default. It only answers the running test's own random
+    community string, so the ports can't be used as an SNMP reflector.
+  - `--no-snmp`, `--snmp-port` and `--snmp-trap-port` turn the ports off or move them. The server GUI has
+    an *SNMP test* box, and its *Add firewall rules* button includes the ports.
+- **Browser SNMP test.** There's a new *SNMP* preset, and an *SNMP test* box to add it to any other test.
+  - Browsers refuse WebRTC to ports below 1024, so the page can't reach UDP 161 / 162. It sends the same
+    polls and informs over WebRTC to the server's browser SNMP ports, UDP 1161 and 1162
+    (`--web-snmp-port`, `--web-snmp-trap-port`).
+  - The page shows live answered / timed-out counts and response times.
+
 ## [1.11.1]
 
 ### Removed

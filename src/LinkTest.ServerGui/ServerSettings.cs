@@ -23,6 +23,8 @@ sealed class ServerSettings
     public int WebPort { get; set; } = ServerOptions.DefaultWebPort;
     /// <summary>Also serve the page over HTTPS on <see cref="WebPort"/> + 1.</summary>
     public bool WebHttps { get; set; }
+    /// <summary>SNMP test: answer SNMP on UDP 161 / 162 (and 1161 / 1162 for browser tests).</summary>
+    public bool SnmpEnabled { get; set; } = true;
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LinkTest", "server-settings.json");
 

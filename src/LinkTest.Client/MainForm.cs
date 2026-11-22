@@ -64,6 +64,7 @@ sealed class MainForm : Form
     readonly StatTile _tBloat = new("Bufferbloat");
     readonly TextBox _pathView = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
     readonly CheckBox _mtu = new() { Text = "Measure path MTU when a test starts", AutoSize = true };
+    readonly CheckBox _snmp = new() { Text = "SNMP test (polls to UDP 161, informs to UDP 162)", AutoSize = true };
     readonly CheckBox _trace = new() { Text = "Traceroute at start and when trouble appears", AutoSize = true };
     readonly NumericUpDown _baseline = Num(0, 60, 0);
     readonly LineChart _chartTput = new() { Title = "Throughput", Unit = "Mbps", Dock = DockStyle.Fill };
@@ -202,6 +203,9 @@ sealed class MainForm : Form
         Row(form, "Idle baseline (s)", _baseline, "Seconds at the start with no load, to measure the idle round-trip time for the bufferbloat grade. 0 disables the grade.");
         form.Controls.Add(_mtu); form.SetColumnSpan(_mtu, 2); _inputs.Add(_mtu);
         form.Controls.Add(_trace); form.SetColumnSpan(_trace, 2); _inputs.Add(_trace);
+        form.Controls.Add(_snmp); form.SetColumnSpan(_snmp, 2); _inputs.Add(_snmp);
+        _tips.SetToolTip(_snmp, "During the test, sends real SNMPv2c GetRequests to the server's UDP 161 once a second and InformRequests to UDP 162 every 5 s, " +
+            "with a management station's timers (1 s timeout, 5 retries): shows whether SNMP gets through and how fast it's answered (needs a 1.12+ server). Results on the Path tab.");
         _tips.SetToolTip(_mtu, "Finds the largest packet that crosses the path unfragmented in each direction and recommends tunnel MTUs (needs a 1.6+ server). Results on the Path tab.");
         _tips.SetToolTip(_trace, "Traces the route to the server at the start, and again (at most once a minute) when loss of 2% or more, a stall of 1 s or more, or a tunnel drop appears. Results on the Path tab.");
 
@@ -459,6 +463,7 @@ sealed class MainForm : Form
         _capacity.Checked = _settings.CapacityTest;
         _capacityPct.Value = (decimal)Math.Clamp(_settings.CapacityPct, 10, 100);
         _mtu.Checked = _settings.MeasureMtu;
+        _snmp.Checked = _settings.SnmpTest;
         _trace.Checked = _settings.AutoTraceroute;
         _baseline.Value = Math.Clamp(c.BaselineSec, 0, 60);
         _csvFolder.Text = _settings.CsvFolder;
@@ -481,6 +486,7 @@ sealed class MainForm : Form
         _settings.CapacityTest = _capacity.Checked;
         _settings.CapacityPct = (double)_capacityPct.Value;
         _settings.MeasureMtu = _mtu.Checked;
+        _settings.SnmpTest = _snmp.Checked;
         _settings.AutoTraceroute = _trace.Checked;
         _settings.CsvFolder = _csvFolder.Text.Trim();
         for (int i = 0; i < _settings.Tunnels.Count && i < _tunnelList.Items.Count; i++)
@@ -643,6 +649,7 @@ sealed class MainForm : Form
         session.MtuMeasured += _ => Ui(() => ShowPath(session));
         session.TraceCompleted += _ => Ui(() => ShowPath(session));
         session.MeasureMtu = _mtu.Checked;
+        session.SnmpTest = _snmp.Checked;
         session.AutoTraceroute = _trace.Checked;
         session.Family = family;
         session.UseTls = true;
@@ -662,7 +669,7 @@ sealed class MainForm : Form
         ShowDetail(null);
         _connView.Items.Clear();
         foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tBloat, _tTime }) t.Set("–");
-        _pathView.Text = _mtu.Checked || _trace.Checked ? "Waiting for the test to start…" : "Path MTU and traceroute are turned off (Diagnostics settings).";
+        _pathView.Text = _mtu.Checked || _trace.Checked || _snmp.Checked ? "Waiting for the test to start…" : "Path MTU, traceroute and the SNMP test are turned off (Diagnostics settings).";
         _status.Text = $"Connecting to {host}…";
 
         _connectCts = new CancellationTokenSource();
@@ -744,6 +751,7 @@ sealed class MainForm : Form
         _locationCts = null;
         if (_session != session) return;
         _timer.Stop();
+        if (session.SnmpTest) ShowPath(session);     // final SNMP figures
         _csvLog?.Dispose();
         _csvLog = null;
         OnTickTunnels();   // final tunnel state
@@ -775,6 +783,7 @@ sealed class MainForm : Form
         var session = _session;
         if (session == null || !session.IsRunning) return;
         var s = session.TakeSample();
+        if (session.SnmpTest && (int)s.ElapsedSec % 5 == 0) ShowPath(session);
 
         _tUp.Set(Mbps(s.UpMbps), s.UpReportStale ? $"no report for {Fmt(s.UpReportAgeSec, "0.0")} s"
             : s.Mixed ? $"UDP {Mbps(s.UpMbpsUdp)} · TCP {Mbps(s.UpMbpsTcp)}" : $"sent {Mbps(s.TxMbps)}", s.UpReportStale ? Color.Firebrick : null);
@@ -998,6 +1007,17 @@ sealed class MainForm : Form
                     sb.AppendLine($"  {v.Name,-34} {v.Overhead(m.Ipv6),7} B {v.TunnelMtu(m.PathMtu, m.Ipv6),11} {v.TcpMss(m.PathMtu, m.Ipv6),8}");
                 sb.AppendLine("  Set the tunnel interface MTU (or MSS clamping) to at most these values to avoid fragmentation.");
             }
+        }
+        if (session.SnmpTest)
+        {
+            sb.AppendLine();
+            sb.AppendLine("SNMP");
+            var sn = session.Snmp;
+            if (sn == null) sb.AppendLine("  starting…");
+            else if (sn.Error != null) sb.AppendLine("  " + sn.Error);
+            else
+                foreach (var c in new[] { sn.Polls, sn.Informs })
+                    if (c != null) sb.AppendLine("  " + char.ToUpperInvariant(c.Text[0]) + c.Text[1..]);
         }
         sb.AppendLine();
         sb.AppendLine("TRACEROUTES (newest first)");

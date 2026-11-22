@@ -41,6 +41,16 @@ public sealed class WebServer : IAsyncDisposable
     public int RtcPort => Options.WebPort;
     /// <summary>Why UDP-style browser tests are unavailable (null = available).</summary>
     public string? RtcUnavailable { get; private set; }
+    SnmpRtcBridge? _snmpBridge;
+    readonly object _snmpLock = new();
+    SnmpServer? _webSnmp;
+    /// <summary>WebRTC on the browser SNMP ports (UDP 1161 / 1162); null when they or WebRTC are off.</summary>
+    internal SnmpRtcBridge? SnmpBridge { get { lock (_snmpLock) return _snmpBridge; } }
+    /// <summary>The server's addresses, for the SNMP test's WebRTC candidates.</summary>
+    internal static IReadOnlyList<IPAddress> ServerAddresses() =>
+        ServerHost.LocalAddresses().Select(a => IPAddress.TryParse(a.Split(' ')[0], out var ip) ? Unmap(ip) : null)
+            .Where(a => a != null && !IPAddress.IsLoopback(a)).Select(a => a!).ToList();
+
     /// <summary>Addresses to open in a browser.</summary>
     public IReadOnlyList<string> Urls { get; private set; } = Array.Empty<string>();
 
@@ -92,6 +102,14 @@ public sealed class WebServer : IAsyncDisposable
         }
         _app = app;
 
+        // Browser SNMP test: browsers refuse WebRTC to ports below 1024, so it gets its own ports next to 161 / 162.
+        if (RtcUnavailable == null && (Options.WebSnmpPort > 0 || Options.WebSnmpTrapPort > 0))
+        {
+            var ws = new SnmpServer(Options.Bind, Options.WebSnmpPort, Options.WebSnmpTrapPort);
+            if (ws.Available) lock (_snmpLock) { _webSnmp = ws; _snmpBridge = new SnmpRtcBridge(ws); }
+            else ws.Dispose();
+        }
+
         // LocalAddresses gives "address (interface)"; IPv4 first, they're easier to type.
         var hosts = ServerHost.LocalAddresses().Select(a => a.Split(' ')[0])
             .OrderBy(a => a.Contains(':') ? 1 : 0).Select(a => a.Contains(':') ? $"[{a}]" : a).ToList();
@@ -102,6 +120,7 @@ public sealed class WebServer : IAsyncDisposable
         ServerHost.Log($"Browser tests on web port {Options.WebPort} (HTTP)" + (cert != null ? $" and {Options.WebHttpsPort} (HTTPS)" : "") +
                        $" (WebRTC on UDP {RtcPort})" + (RtcUnavailable != null ? $" - UDP tests unavailable: {RtcUnavailable}" : ""));
         foreach (var u in urls.Where(u => !u.Contains('[')).Take(3).Concat(urls.Where(u => u.Contains('[')).Take(1))) ServerHost.Log("  open " + u);
+        if (SnmpBridge is { } b) ServerHost.Log($"  browser SNMP test on UDP {b.Snmp.PollPort} and {b.Snmp.TrapPort} (browsers can't use ports below 1024)");
         ServerHost.Log($"  browser results saved in {Results.Folder}");
     }
 
@@ -159,6 +178,7 @@ public sealed class WebServer : IAsyncDisposable
         ["httpsPort"] = Options.WebHttpsPort > 0 ? Options.WebHttpsPort : null,
         ["httpPort"] = Options.WebPort,
         ["client"] = Unmap(ctx.Connection.RemoteIpAddress)?.ToString(),
+        ["snmp"] = SnmpBridge is { } bridge ? new JsonObject { ["poll"] = bridge.Snmp.PollPort, ["trap"] = bridge.Snmp.TrapPort, ["appPoll"] = _host.Snmp?.PollPort, ["appTrap"] = _host.Snmp?.TrapPort } : null,
     });
 
     static JsonObject? _help;
@@ -315,6 +335,15 @@ public sealed class WebServer : IAsyncDisposable
                         if (session is { Stopped: false }) { await Error("A test is already running."); break; }
                         session = await StartSessionAsync(m, client, serverName, security, ua, Send, Error);
                         break;
+                    case "offer" when session != null && SnmpLink(m) is int link:
+                        // SNMP test: WebRTC on UDP 161 / 162. Failing to connect is a result, not an error.
+                        try
+                        {
+                            string answer = await session.AnswerSnmpAsync(link, (string?)m["sdp"] ?? "", pageAddresses);
+                            await Send(new JsonObject { ["t"] = "answer", ["link"] = m["link"]?.DeepClone(), ["sdp"] = answer });
+                        }
+                        catch (Exception e) { session.SnmpSetupFailed(link, e.Message); }
+                        break;
                     case "offer" when session != null:
                         try
                         {
@@ -322,6 +351,9 @@ public sealed class WebServer : IAsyncDisposable
                             await Send(new JsonObject { ["t"] = "answer", ["sdp"] = answer });
                         }
                         catch (Exception e) { await Error("WebRTC setup failed: " + e.Message); await session.StopAsync("WebRTC setup failed"); }
+                        break;
+                    case "cand" when session != null && SnmpLink(m) is int link:
+                        session.AddSnmpCandidate(link, (string?)m["c"] ?? "", (string?)m["mid"]);
                         break;
                     case "cand" when session != null:
                         session.AddRemoteCandidate((string?)m["c"] ?? "", (string?)m["mid"]);
@@ -347,6 +379,9 @@ public sealed class WebServer : IAsyncDisposable
         }
     }
 
+    /// <summary>"link": "snmp-poll" = 0 (UDP 161), "snmp-trap" = 1 (UDP 162); null for the test's own data channel.</summary>
+    static int? SnmpLink(JsonObject m) => (string?)m["link"] switch { "snmp-poll" => 0, "snmp-trap" => 1, _ => null };
+
     async Task<WebTestSession?> StartSessionAsync(JsonObject m, IPAddress client, string serverName, string security, string ua,
         Func<JsonObject, Task> send, Func<string, Task> error)
     {
@@ -356,8 +391,16 @@ public sealed class WebServer : IAsyncDisposable
         try { (cfg, speed) = ParseConfig(m["config"] as JsonObject); }
         catch (Exception e) { await error("Invalid test settings: " + e.Message); return null; }
         double rtt = D((m["config"] as JsonObject)?["rttMs"]);
+        bool snmpWanted = (m["config"] as JsonObject)?["snmp"] is JsonValue sv && sv.TryGetValue(out bool sb) && sb;
+        SnmpRtcBridge? bridge = null;
+        if (snmpWanted && (bridge = SnmpBridge) == null)
+        {
+            await error(RtcUnavailable != null ? "The SNMP test needs WebRTC, which isn't available on this server: " + RtcUnavailable
+                : "The browser SNMP test is off on this server (its UDP 1161 / 1162 ports aren't open).");
+            return null;
+        }
         var s = new WebTestSession(this, NewId(), cfg, client, serverName, security, ua, send, speed,
-            double.IsFinite(rtt) && rtt is > 0 and < 60_000 ? rtt : double.NaN);
+            double.IsFinite(rtt) && rtt is > 0 and < 60_000 ? rtt : double.NaN, bridge);
         if (s.UsesUdp && RtcUnavailable != null) { await error("UDP tests aren't available on this server: " + RtcUnavailable); s.Dispose(); return null; }
         _sessions[s.Token] = s;
         await send(new JsonObject
@@ -371,6 +414,7 @@ public sealed class WebServer : IAsyncDisposable
             ["baselineSec"] = cfg.BaselineSec, ["durationSec"] = cfg.DurationSec,
             ["speed"] = speed != null, ["downSec"] = speed?.DownSec, ["upSec"] = speed?.UpSec, ["rampSec"] = speed?.RampSec,
             ["warmupSec"] = s.WarmupSec,
+            ["snmp"] = bridge == null ? null : new JsonObject { ["poll"] = bridge.Snmp.PollPort, ["trap"] = bridge.Snmp.TrapPort },
         });
         return s;
     }
@@ -413,6 +457,7 @@ public sealed class WebServer : IAsyncDisposable
             BaselineSec = (int)Math.Clamp(D(c["baselineSec"], 3), 0, 30),
         };
         if (cfg.UpMbps + cfg.DownMbps <= 0 && cfg.DurationSec == 0) throw new ArgumentException("set a rate or a duration");
+        if (cfg.UpMbps + cfg.DownMbps <= 0) cfg.BaselineSec = 0;     // SNMP only: nothing to compare the idle latency with
         return (cfg, null);
     }
 
@@ -464,6 +509,7 @@ public sealed class WebServer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         foreach (var s in _sessions.Values) await s.StopAsync("Server stopped");
+        lock (_snmpLock) { _snmpBridge?.Dispose(); _snmpBridge = null; _webSnmp?.Dispose(); _webSnmp = null; }
         if (_app != null)
         {
             try { await _app.StopAsync(new CancellationTokenSource(3000).Token); } catch { }

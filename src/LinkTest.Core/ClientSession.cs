@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using LinkTest.Core.Snmp;
 using LinkTest.Core.Tunnels;
 
 namespace LinkTest.Core;
@@ -35,6 +36,15 @@ public sealed class ClientSession : IDisposable
 
     public MtuResult? Mtu { get; private set; }
     public event Action<MtuResult>? MtuMeasured;
+    /// <summary>
+    /// SNMP test: real SNMPv2c polls to the server's UDP 161 and informs to UDP 162 during the test, with a management
+    /// station's timers (1 s timeout, 5 retries). Needs a 1.12+ server with the SNMP ports open.
+    /// </summary>
+    public bool SnmpTest { get; set; }
+    SnmpUdpProbe? _snmp;
+    SnmpResult? _snmpResult;
+    /// <summary>SNMP test figures so far (null when off).</summary>
+    public SnmpResult? Snmp => _snmp?.Result() ?? _snmpResult;
     public IReadOnlyList<TraceResult> Traces { get { lock (_traces) return _traces.ToList(); } }
     public event Action<TraceResult>? TraceCompleted;
 
@@ -364,6 +374,7 @@ public sealed class ClientSession : IDisposable
             if (_tunnels.Count > 0) StartThread("tunnels", TunnelLoop, isSender: true);
 
             if (MeasureMtu && _serverVersion >= new Version(1, 6, 0)) _ = Task.Run(RunMtuTestAsync);
+            if (SnmpTest) StartSnmp(ip, welcome);
             if (CapacityTest)
             {
                 if (_serverVersion < new Version(1, 9, 0)) throw new NotSupportedException("The capacity test needs a 1.9+ server; update the server.");
@@ -933,6 +944,39 @@ public sealed class ClientSession : IDisposable
         });
     }
 
+    void StartSnmp(IPAddress server, ControlMessage welcome)
+    {
+        if (welcome.SnmpCommunity == null)
+        {
+            _snmpResult = new SnmpResult { Error = _serverVersion < new Version(1, 12, 0) ? $"needs a 1.12+ server (server is {welcome.AppVersion ?? "older"})" : "the server's SNMP ports are off" };
+            Emit("SNMP test: " + _snmpResult.Error);
+            return;
+        }
+        if (welcome.SnmpPort == 0 || welcome.SnmpTrapPort == 0)
+            Emit($"SNMP test: the server couldn't open UDP {(welcome.SnmpPort == 0 ? SnmpRun.DefaultPollPort : SnmpRun.DefaultTrapPort)} - that part will show no answers");
+        try
+        {
+            int poll = welcome.SnmpPort > 0 ? welcome.SnmpPort : SnmpRun.DefaultPollPort, trap = welcome.SnmpTrapPort > 0 ? welcome.SnmpTrapPort : SnmpRun.DefaultTrapPort;
+            _snmp = new SnmpUdpProbe(server, welcome.SnmpCommunity, poll, trap);
+            _snmp.Event += Emit;
+            Emit($"SNMP test: polling UDP {poll} every {SnmpRun.PollIntervalMs / 1000} s, informs to UDP {trap} every {SnmpRun.InformIntervalMs / 1000} s " +
+                 $"({SnmpRun.TimeoutMs / 1000} s timeout, {SnmpRun.Retries} retries)");
+        }
+        catch (Exception e)
+        {
+            _snmpResult = new SnmpResult { Error = "could not start: " + e.Message };
+            Emit("SNMP test " + _snmpResult.Error);
+        }
+    }
+
+    void StopSnmp()
+    {
+        var p = Interlocked.Exchange(ref _snmp, null);
+        if (p == null) return;
+        _snmpResult = p.Result();
+        p.Dispose();
+    }
+
     public string TunnelSummaryLine()
     {
         long now = Clock.NowUs;
@@ -953,6 +997,7 @@ public sealed class ClientSession : IDisposable
             if (_ctrl != null && _ctrl.TrySend(new ControlMessage { Type = "stop" }))
                 await Task.WhenAny(_final.Task, Task.Delay(3000));
             await Task.Delay(300);   // in-flight download packets
+            StopSnmp();
             string summary = BuildSummary();
             Emit(summary);
             try { Record = BuildRecord(reason, summary); } catch (Exception e) { Emit("Could not build the test record: " + e.Message); }
@@ -998,6 +1043,7 @@ public sealed class ClientSession : IDisposable
         if (Config.UpMbps + Config.DownMbps > 0 && _bloat.CurrentGrade is string g)
             sb.AppendLine($"Bufferbloat: grade {g} - RTT +{_bloat.IncreaseMs:0.0} ms under load (idle {_bloat.IdleMs:0.0} ms, loaded {_bloat.LoadedMs:0.0} ms): {BufferbloatMeter.Describe(g)}");
         if (Mtu != null) sb.AppendLine(Mtu.Summary);
+        if (Snmp is { } snmp) sb.AppendLine(snmp.Summary);
         var lossyTrace = Traces.LastOrDefault(t => t.LossStartsAt != null);
         if (lossyTrace != null) sb.AppendLine("Last trouble trace: " + lossyTrace.Summary);
         long lag = _classes.Sum(c => c.Eng.SenderLagEvents);
@@ -1036,6 +1082,7 @@ public sealed class ClientSession : IDisposable
         try { _senderCts.Cancel(); } catch { }
         try { _cts.Cancel(); } catch { }
         try { _probe?.Dispose(); } catch { }
+        try { StopSnmp(); } catch { }
         foreach (var c in _classes)
         {
             try { c.Udp?.Dispose(); } catch { }
@@ -1113,6 +1160,7 @@ public sealed class ClientSession : IDisposable
             Summary = summary,
             Connection = Connection,
             Mtu = Mtu,
+            Snmp = Snmp,
             Traces = Traces.ToList(),
             Tunnels = _tunnels.Select(t => t.GetStatus(now)).ToList(),
             Classes = classes,

@@ -60,6 +60,7 @@ if (args.Length == 0 || args[0] is "-h" or "--help" or "/?")
           --no-ip-lookup     don't query ipinfo.io for this client's public IP details
           --baseline SEC     idle seconds at the start for the bufferbloat grade (default 3, 0 = off)
           --no-mtu           skip the path-MTU test
+          --snmp             SNMP test: SNMPv2c polls to the server's UDP 161 and informs to UDP 162 during the test
           --no-trace         no automatic traceroutes
           --report FILE      write an HTML report (charts, tables, traceroutes) when the test ends
           --pdf FILE         write a PDF report on how well each type of traffic was carried
@@ -78,6 +79,7 @@ string host = args[0];
 int port = Protocol.DefaultPort;
 string? key = null, csvPath = null, tunnelSel = "default", reportPath = null, jsonPath = null, pdfPath = null;
 double loss = 0;
+bool snmp = false;
 bool ipLookup = true, measureMtu = true, autoTrace = true, requireTls = false, noTls = false, trustNewCert = false, capacity = false;
 double capacityPct = 80;
 string family = "auto";
@@ -110,6 +112,7 @@ for (int i = 1; i < args.Length; i++)
         case "--no-ip-lookup": ipLookup = false; break;
         case "--baseline": cfg.BaselineSec = int.Parse(Next()); break;
         case "--no-mtu": measureMtu = false; break;
+        case "--snmp": snmp = true; break;
         case "--no-trace": autoTrace = false; break;
         case "--report": reportPath = Next(); break;
         case "--pdf": pdfPath = Next(); break;
@@ -202,6 +205,7 @@ async Task<(int code, TestRecord? record)> RunOne(AddressFamily? fam, string? cs
     session.Ended += r => ended.TrySetResult(r);
     session.TraceCompleted += t => { if (t.Error == null) Console.Write(t.Format()); };
     session.MeasureMtu = measureMtu;
+    session.SnmpTest = snmp;
     session.AutoTraceroute = autoTrace;
     session.Family = fam;
     session.UseTls = !noTls;

@@ -39,6 +39,8 @@ LinkTestServer.exe [--port 7447] [--key SECRET] [--max-mbps 1000] [--max-session
 # allow it through Windows Firewall (Administrator, once):
 netsh advfirewall firewall add rule name="LinkTest TCP" dir=in action=allow protocol=TCP localport=7447
 netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow protocol=UDP localport=7447
+# for the SNMP test, also UDP 161-162 (and 1161-1162 with browser tests):
+netsh advfirewall firewall add rule name="LinkTest SNMP" dir=in action=allow protocol=UDP localport=161-162,1161-1162
 ```
 
 **Client GUI**: enter the server IP or FQDN, then pick the options:
@@ -139,8 +141,14 @@ Browsers can't do some of what the apps do:
 - IPv4 vs IPv6 comparison
 - TCP retransmit counts
 
-Firewall: allow TCP 7448 (and 7449 for HTTPS) and UDP 7448. The GUI's *Add firewall rules* button does
-this when browser tests are enabled.
+Firewall: allow TCP 7448 (and 7449 for HTTPS) and UDP 7448, plus UDP 1161-1162 for the browser SNMP test.
+The GUI's *Add firewall rules* button does this when browser tests are enabled.
+
+The browser SNMP test (the *SNMP* preset, or the *SNMP test* box with any other test) can't use UDP 161 / 162:
+browsers refuse WebRTC connections to ports below 1024. It runs the same polls and informs over WebRTC to
+the server's browser SNMP ports, UDP 1161 and 1162 (`--web-snmp-port`, `--web-snmp-trap-port`). The
+packets are WebRTC, not SNMP, so a firewall that inspects SNMP treats them differently. To test UDP 161 / 162
+themselves, use the apps.
 
 ## Diagnostics
 
@@ -150,6 +158,21 @@ this when browser tests are enabled.
     AES-CBC/SHA1, with NAT-T), OpenVPN UDP and GRE.
   - Results appear on the *Path* tab.
   - Turn it off in Settings, or with `--no-mtu` in the CLI.
+- **SNMP test** (off by default; *SNMP test* in Settings, `--snmp` in the CLI): during the test the client
+  acts like a network management station talking to the server.
+  - It sends real SNMPv2c GetRequests to the server's UDP 161 once a second, and InformRequests to UDP 162
+    every 5 s.
+  - It uses net-snmp's default timers: a request not answered within 1 s is sent again, up to 5 times, then
+    counted as timed out.
+  - Results: requests answered, at the first try or after retries, timeouts, response time (average, 95th
+    percentile, maximum), unanswered datagrams and the longest outage. They appear on the *Path* tab
+    (Android: *Details*) and in the reports.
+  - The server answers only messages carrying the running test's random community string, about as many
+    bytes as it received, and at most 20 per second per test, so it can't be used as an SNMP reflector.
+  - It needs a 1.12+ server with the SNMP ports open. If the Windows SNMP service or another SNMP agent or
+    trap receiver already uses 161 / 162, the server logs it and that part of the test gets no answers.
+    `--no-snmp` (or the *SNMP test* box in the server GUI) turns the ports off; `--snmp-port` and
+    `--snmp-trap-port` move them.
 - **Bufferbloat:** the first few seconds of a test carry heartbeats only (*Idle baseline*, 3 s by default).
   - The idle round-trip time is then compared with the round-trip time under load.
   - The grade runs from A+ (under 5 ms extra) through A, B, C and D to F (400 ms or more extra).
@@ -291,5 +314,7 @@ vendor-specific behaviour such as on-demand DPD being suppressed by data traffic
 - Browser tests (`--web`) are off by default. The page and its results are public unless a key is set, so
   set `--key` before enabling them on a server that others can reach. Over plain HTTP the key is sent
   unencrypted; use the HTTPS page to protect it.
+- The SNMP test ports (UDP 161 / 162, and 1161 / 1162 with browser tests) only answer messages with a
+  running test's random community string. `--no-snmp` closes them.
 - Use `--key` and `--max-mbps` on servers reachable from the internet. Traffic is not encrypted, but it
   contains nothing except test data and statistics.

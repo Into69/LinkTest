@@ -38,6 +38,8 @@ public sealed class WebFixture : IAsyncLifetime
             {
                 Port = port, NoIpLookup = true, MaxSessions = 4, CertificatePath = ServerFixture.CertPath + ".web.pfx",
                 Key = Key, WebPort = web, WebResultsFolder = Results,
+                SnmpPort = ServerFixture.FreeUdpPort(), SnmpTrapPort = ServerFixture.FreeUdpPort(),
+                WebSnmpPort = ServerFixture.FreeUdpPort(), WebSnmpTrapPort = ServerFixture.FreeUdpPort(),
             };
             Host = new ServerHost(opts) { PeriodicStatus = false };
             var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
@@ -90,6 +92,33 @@ public class WebTests : IClassFixture<WebFixture>
         Assert.NotNull(help["tile.rtt"]?["ideal"]);
         Assert.Equal(System.Net.HttpStatusCode.Forbidden, (await http.GetAsync(Http("/api/results"))).StatusCode);
         Assert.Equal(System.Net.HttpStatusCode.NotFound, (await http.GetAsync(Http("/..%2f..%2fsecret"))).StatusCode);
+    }
+
+    [Fact]
+    public async Task Snmp_test_runs_over_webrtc_on_the_browser_snmp_ports()
+    {
+        using (var http = new HttpClient())
+        {
+            var info = JsonNode.Parse(await http.GetStringAsync(Http("/api/info")))!;
+            Assert.Equal(_f.Host.Options.WebSnmpPort, (int)info["snmp"]!["poll"]!);
+            Assert.Equal(_f.Host.Options.WebSnmpTrapPort, (int)info["snmp"]!["trap"]!);
+        }
+        await using var b = await FakeBrowser.ConnectAsync(_f.WebPort, WebFixture.Key);
+        await b.NextAsync("welcome");
+        var done = await b.RunAsync(new JsonObject
+        {
+            ["protocol"] = "udp", ["upMbps"] = 0, ["downMbps"] = 0, ["durationSec"] = 7, ["baselineSec"] = 0, ["snmp"] = true,
+        });
+        var rec = Load((string)done["file"]!);
+        var snmp = rec.Snmp!;
+        Assert.Equal("WebRTC data channel", snmp.Transport);
+        Assert.Equal(_f.Host.Options.WebSnmpPort, snmp.Polls!.Port);
+        Assert.InRange(snmp.Polls.Answered, 3, 8);
+        Assert.Equal(0, snmp.Polls.Failed);
+        Assert.True(snmp.Informs!.Answered >= 1, snmp.Summary);
+        Assert.Equal("SNMP test", rec.Mode);
+        Assert.StartsWith("SNMP test:", rec.Summary);
+        Assert.NotNull(done["snmp"]?["poll"]?["answered"]);
     }
 
     [Fact]
@@ -243,6 +272,51 @@ sealed class FakeBrowser : IAsyncDisposable
     void TryAdd(RtcCandidate c) { try { _pc?.AddRemoteCandidate(c); } catch { } }
     DataChannelDotnet.IRtcDataChannel? _dc;
     public List<JsonObject> Samples { get; } = new();
+
+    // SNMP test links ("snmp-poll", "snmp-trap"): the server sends SNMP requests, the page echoes them.
+    sealed class SnmpLink
+    {
+        public required RtcPeerConnection Pc;
+        public DataChannelDotnet.IRtcDataChannel? Dc;
+        public readonly List<RtcCandidate> Cands = new();
+        public bool RemoteSet;
+    }
+    readonly Dictionary<string, SnmpLink> _snmp = new();
+
+    async Task OpenSnmpAsync(string link)
+    {
+        var l = new SnmpLink { Pc = new RtcPeerConnection(new RtcPeerConfiguration()) };
+        lock (_snmp) _snmp[link] = l;
+        var offer = new TaskCompletionSource<string>();
+        l.Pc.OnLocalDescriptionSafe += (_, d) => { if (d.Type == RtcDescriptionType.Offer) offer.TrySetResult(d.Sdp); };
+        l.Pc.OnCandidateSafe += (pc, c) => _ = SendAsync(new JsonObject { ["t"] = "cand", ["link"] = link, ["c"] = c.Content, ["mid"] = c.Mid });
+        var dc = l.Dc = l.Pc.CreateDataChannel(new RtcCreateDataChannelArgs { Label = link, Unordered = true, Unreliable = true, MaxRetransmits = 0, Protocol = RtcDataChannelProtocol.Binary });
+        dc.OnBinaryReceivedSafe += (_, e) => { try { dc.Send(e.Data); } catch { } };
+        await SendAsync(new JsonObject { ["t"] = "offer", ["link"] = link, ["sdp"] = await offer.Task.WaitAsync(TimeSpan.FromSeconds(10)) });
+    }
+
+    void OnSnmpMessage(JsonObject o)
+    {
+        SnmpLink? l;
+        lock (_snmp) _snmp.TryGetValue((string)o["link"]!, out l);
+        if (l == null) return;
+        lock (l.Cands)
+        {
+            if ((string?)o["t"] == "answer")
+            {
+                l.Pc.SetRemoteDescription(new RtcDescription { Sdp = (string)o["sdp"]!, Type = RtcDescriptionType.Answer });
+                l.RemoteSet = true;
+                foreach (var c in l.Cands) try { l.Pc.AddRemoteCandidate(c); } catch { }
+                l.Cands.Clear();
+            }
+            else
+            {
+                var c = new RtcCandidate { Content = (string)o["c"]!, Mid = (string?)o["mid"] ?? "" };
+                if (l.RemoteSet) try { l.Pc.AddRemoteCandidate(c); } catch { }
+                else l.Cands.Add(c);
+            }
+        }
+    }
     /// <summary>Delays the per-second reports, like a high-latency or bufferbloated link would.</summary>
     public int SecDelayMs { get; set; }
 
@@ -279,7 +353,8 @@ sealed class FakeBrowser : IAsyncDisposable
                 if (r.MessageType == WebSocketMessageType.Close) break;
                 if (JsonNode.Parse(Encoding.UTF8.GetString(ms.ToArray())) is JsonObject o)
                 {
-                    if ((string?)o["t"] == "cand")
+                    if (o["link"] != null) OnSnmpMessage(o);
+                    else if ((string?)o["t"] == "cand")
                     {
                         var c = new RtcCandidate { Content = (string)o["c"]!, Mid = (string?)o["mid"] ?? "" };
                         lock (_cands) { if (_remoteSet) TryAdd(c); else _cands.Add(c); }
@@ -321,6 +396,7 @@ sealed class FakeBrowser : IAsyncDisposable
         string token = (string)st["token"]!;
         double upUdp = (double)st["upUdp"]!, upTcp = (double)st["upTcp"]!, downTcp = (double)st["downTcp"]!;
         int streams = (int)st["streams"]!, size = (int)st["packetSize"]!, baseline = (int)st["baselineSec"]!;
+        if (st["snmp"] != null) { await OpenSnmpAsync("snmp-poll"); await OpenSnmpAsync("snmp-trap"); }
 
         if ((bool)st["udp"]!)
         {

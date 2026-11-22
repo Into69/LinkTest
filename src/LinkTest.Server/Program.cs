@@ -11,6 +11,7 @@ if (opts == null)
         Usage: LinkTestServer [--port N] [--bind ADDRESS] [--key SECRET] [--max-mbps N] [--max-sessions N]
                               [--auto-update | --no-update-check] [--no-ip-lookup] [--require-tls] [--cert FILE]
                               [--web [PORT]] [--web-https [PORT]] [--web-results FOLDER]
+                              [--no-snmp] [--snmp-port N] [--snmp-trap-port N] [--web-snmp-port N] [--web-snmp-trap-port N]
                LinkTestServer --update | --update-from PACKAGE.zip | --version
 
           --port N              TCP and UDP port to listen on (default 7447)
@@ -26,6 +27,11 @@ if (opts == null)
           --web [PORT]          Browser tests: web page on TCP PORT, WebRTC on UDP PORT (default 7448)
           --web-https [PORT]    Also serve the page over HTTPS on PORT (default 7449; self-signed certificate)
           --web-results FOLDER  Where browser test results are saved (default: per-user LinkTest\web-results)
+          --no-snmp             Don't open the SNMP test ports (UDP 161 / 162, and 1161 / 1162 for browsers)
+          --snmp-port N         SNMP test: agent port the clients poll (default 161)
+          --snmp-trap-port N    SNMP test: port the clients send informs to (default 162)
+          --web-snmp-port N     Browser SNMP test ports (default 1161 and 1162; browsers can't use ports
+          --web-snmp-trap-port N  below 1024)
           --update              Install the latest release now and exit
           --update-from FILE    Install from a downloaded release zip (offline update) and exit
 
@@ -33,6 +39,7 @@ if (opts == null)
           netsh advfirewall firewall add rule name="LinkTest TCP" dir=in action=allow protocol=TCP localport=7447
           netsh advfirewall firewall add rule name="LinkTest UDP" dir=in action=allow protocol=UDP localport=7447
           With --web / --web-https, also allow TCP 7448-7449 and UDP 7448.
+          For the SNMP test, also allow UDP 161-162 (and 1161-1162 with --web).
         """);
     return args.Length == 1 && args[0] is "--help" or "-h" or "/?" ? 0 : 1;
 }

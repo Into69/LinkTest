@@ -39,6 +39,11 @@ public sealed class ControlMessage
     public GeoFix? Location { get; set; }
     /// <summary>"rate" (C→S, 1.9+): new upload / download rates in <see cref="Config"/> (capacity test). Welcome: the server's per-direction cap.</summary>
     public double MaxMbps { get; set; }
+    /// <summary>Welcome (1.12+): community string for this test's SNMP messages (null = the server has no SNMP test).</summary>
+    public string? SnmpCommunity { get; set; }
+    /// <summary>Welcome (1.12+): the server's SNMP agent and notification ports (0 = not open).</summary>
+    public int SnmpPort { get; set; }
+    public int SnmpTrapPort { get; set; }
 }
 
 public sealed class ControlChannel : IDisposable
