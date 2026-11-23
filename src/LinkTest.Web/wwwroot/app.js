@@ -269,11 +269,11 @@ function onMessage(m) {
     case 'error':
       status(m.msg, true);
       if (test && !test.go) cleanupTest();
-      if (net && !test) abortNetwork(m.msg);
+      if (net && !test) partFailed(m.msg);
       if (/key/i.test(m.msg)) { $('keyRow').hidden = false; $('key').focus(); }
       updateStart();
       break;
-    case 'started': setupTest(m).catch(err => { status(err.message, true); send({ t: 'stop' }); cleanupTest(); if (net) abortNetwork(err.message); }); break;
+    case 'started': setupTest(m).catch(err => { status(err.message, true); send({ t: 'stop' }); cleanupTest(); if (net) partFailed(err.message); }); break;
     case 'answer': (m.link ? test?.snmpLinks?.[m.link]?.onAnswer : test?.onAnswer)?.(m.sdp); break;
     case 'cand': (m.link ? test?.snmpLinks?.[m.link]?.onCandidate : test?.onCandidate)?.(m.c, m.mid); break;
     case 'go': beginLoad(); break;
@@ -592,6 +592,9 @@ function stopTest() {
 }
 
 function onDone(m) {
+  // The end of a session this page already gave up on (stopped while connecting, or a Network test part whose
+  // WebRTC connection failed). The server handles messages in order, so it arrives before the next test's 'started'.
+  if (!test?.st) { loadHistory(); return; }
   const t = test;
   cleanupTest();
   showSnmp(m.snmp, true);
@@ -601,7 +604,7 @@ function onDone(m) {
   if (net) netPartDone(m);
 }
 
-function finishTest(reason) { cleanupTest(); status('Idle · ' + reason, true); if (net) abortNetwork(reason); }
+function finishTest(reason) { cleanupTest(); status('Idle · ' + reason, true); if (net) partFailed(reason); }
 
 function cleanupTest() {
   const t = test;
@@ -714,15 +717,32 @@ function netPartDone(m) {
   }
   net.i++;
   renderNetwork();
-  // A short pause so the next part's idle baseline isn't measured while the last one drains.
-  setTimeout(() => { if (net && !net.stopped && !test) runNetworkPart(); }, 2000);
+  nextNetworkPart();
 }
 
-function abortNetwork(reason) {
+/** The running part failed: note why and go on with the next part (only the speed test is needed by the others). */
+function partFailed(reason) {
   if (!net) return;
   const s = net.steps[net.i];
-  if (s && s.state === 'running') { s.state = 'failed'; s.note = reason; }
-  finishNetwork('stopped: ' + reason, true);
+  if (!s || s.state !== 'running') return;   // e.g. an error between parts
+  s.state = 'failed';
+  s.note = reason;
+  if (s.id === 'speed') { finishNetwork("stopped: the speed test failed, so the load parts can't be sized", true); return; }
+  net.i++;
+  renderNetwork();
+  status(`Network test · ${s.label} failed · going on with the next part`, true);
+  nextNetworkPart();
+}
+
+/** Starts the next part after a short pause (so its idle baseline isn't measured while the last one drains),
+ *  once the page is connected to the server again if the connection dropped. */
+function nextNetworkPart(since = Date.now()) {
+  setTimeout(() => {
+    if (!net || net.stopped || test) return;
+    if (ready) { runNetworkPart(); return; }
+    if (Date.now() - since > 30000) { finishNetwork('stopped: lost the connection to the server', true); return; }
+    nextNetworkPart(since);
+  }, 2000);
 }
 
 function finishNetwork(how, err = false) {

@@ -2,6 +2,14 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.14.1]
+
+### Fixed
+- **Network test:** when a part fails (for example, when UDP-style traffic can't connect), the card marks it
+  *failed* with the reason, and the test goes on with the next part. Before, the whole run stopped. Only a
+  failed speed test still ends the run, because the load parts are sized from it.
+- The browser page no longer mistakes the end of a test it gave up on for the end of the next test.
+
 ## [1.14.0]
 
 ### New

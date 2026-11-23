@@ -121,7 +121,8 @@ What runs in the browser:
   - the SNMP test alongside every part, including the speed test, when the server offers it.
 
   The speed test always runs, because it sizes the load parts. Each part is saved as its own test with its
-  own reports, and the *Network test* card lists them with links. *Stop* ends the whole run.
+  own reports, and the *Network test* card lists them with links. If a part fails, the card shows why and
+  the run goes on with the next part. *Stop* ends the whole run.
 - **UDP-style traffic** uses a WebRTC data channel set to unreliable and unordered, so it measures real UDP
   packets with real loss, jitter and gaps. It is limited to 25 Mbps per direction, because browsers' WebRTC
   stops behaving like plain UDP above that.
