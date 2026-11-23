@@ -53,7 +53,7 @@ sealed class TunnelEditPage : ContentPage
         }
         form.Add(_detect);
 
-        var save = new Button { Text = "Save", BackgroundColor = Ui.Accent, TextColor = Colors.White, Margin = new Thickness(0, 16, 0, 0) };
+        var save = new Button { Text = "Save", BackgroundColor = Ui.ButtonBg, TextColor = Colors.White, Margin = new Thickness(0, 16, 0, 0) };
         save.Clicked += async (_, _) =>
         {
             var bad = Fields.Where(f => !TryParse(_num[f.key].Text, out _)).Select(f => f.label).ToList();
@@ -66,7 +66,7 @@ sealed class TunnelEditPage : ContentPage
             _onSave(_p);
             await Navigation.PopAsync();
         };
-        var defaults = new Button { Text = "Restore preset values", BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent, Margin = new Thickness(0, 8, 0, 0) };
+        var defaults = new Button { Text = "Restore preset values", BackgroundColor = Ui.SoftButtonBg, TextColor = Ui.Accent, Margin = new Thickness(0, 8, 0, 0) };
         defaults.Clicked += (_, _) =>
         {
             var preset = TunnelPresets.CreateDefaults().FirstOrDefault(t => t.Name == profile.Name);

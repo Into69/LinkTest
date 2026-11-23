@@ -25,13 +25,13 @@ sealed class LivePage : ContentPage
         IconImageSource = null;
         BackgroundColor = Ui.PageBg;
 
-        _tput.AddSeries("Up", Color.FromArgb("#0078D4"));
-        _tput.AddSeries("Down", Color.FromArgb("#10893E"));
-        _lat.AddSeries("RTT", Color.FromArgb("#CA5010"));
-        _lat.AddSeries("Jitter ↑", Color.FromArgb("#0078D4"));
-        _lat.AddSeries("Jitter ↓", Color.FromArgb("#10893E"));
-        _lossChart.AddSeries("Loss ↑", Color.FromArgb("#0078D4"));
-        _lossChart.AddSeries("Loss ↓", Color.FromArgb("#C42B1C"));
+        _tput.AddSeries("Up", Ui.Up);
+        _tput.AddSeries("Down", Ui.Down);
+        _lat.AddSeries("RTT", Ui.Rtt);
+        _lat.AddSeries("Jitter ↑", Ui.Up);
+        _lat.AddSeries("Jitter ↓", Ui.Down);
+        _lossChart.AddSeries("Loss ↑", Ui.Up);
+        _lossChart.AddSeries("Loss ↓", Ui.LossDown);
         _tputView = new GraphicsView { Drawable = _tput, HeightRequest = 170 };
         _latView = new GraphicsView { Drawable = _lat, HeightRequest = 170 };
         _lossView = new GraphicsView { Drawable = _lossChart, HeightRequest = 150 };

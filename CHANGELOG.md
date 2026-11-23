@@ -2,6 +2,22 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.13.0]
+
+### New
+- **Dark mode.** The Windows client and the Android app have a *Theme* setting: System (the default, follows
+  Windows / Android), Light or Dark. On Windows it's in the version menu at the bottom right and applies after a
+  restart. On Android it's under *Settings > App* and applies at once.
+- The browser page has a System / Light / Dark switch in its top bar. It used to follow the browser only.
+
+### Changed
+- The browser *Speed test* preset now includes the SNMP test, when the server offers it.
+- The server GUI checks for updates only when *Install updates automatically when no tests are running* is
+  on. Otherwise it checks only when you click *Check for updates*. Its *Check for updates automatically* menu
+  item is gone.
+- The headless server checks for updates only with `--auto-update`. `LinkTestServer --update` still checks and
+  installs on request.
+
 ## [1.12.0]
 
 ### New

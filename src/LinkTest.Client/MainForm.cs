@@ -62,7 +62,7 @@ sealed class MainForm : Form
     readonly StatTile _tMos = new("VoIP MOS (est.)");
     readonly StatTile _tTime = new("Elapsed");
     readonly StatTile _tBloat = new("Bufferbloat");
-    readonly TextBox _pathView = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
+    readonly TextBox _pathView = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Theme.Card };
     readonly CheckBox _mtu = new() { Text = "Measure path MTU when a test starts", AutoSize = true };
     readonly CheckBox _snmp = new() { Text = "SNMP test (polls to UDP 161, informs to UDP 162)", AutoSize = true };
     readonly CheckBox _trace = new() { Text = "Traceroute at start and when trouble appears", AutoSize = true };
@@ -78,7 +78,7 @@ sealed class MainForm : Form
     readonly CheckBox _ipLookup = new() { Text = "Look up my public IP details (ipinfo.io)", AutoSize = true };
     readonly CheckBox _shareLocation = new() { Text = "Report my location with the test", AutoSize = true };
     CancellationTokenSource? _locationCts;
-    readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Color.White };
+    readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 9f), BackColor = Theme.Card };
     readonly ToolStripStatusLabel _status = new() { Text = "Idle", Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
 
@@ -107,7 +107,7 @@ sealed class MainForm : Form
         ClientSize = new Size(1400, 880);
         MinimumSize = new Size(1000, 650);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(245, 246, 248);
+        BackColor = Theme.Window;
         BuildLayout();
         LoadSettingsToUi();
         ResumeLayout(false);
@@ -145,7 +145,7 @@ sealed class MainForm : Form
 
     void BuildLayout()
     {
-        var left = new Panel { Dock = DockStyle.Left, Width = 340, AutoScroll = true, Padding = new Padding(10, 6, 10, 6), BackColor = Color.White };
+        var left = new Panel { Dock = DockStyle.Left, Width = 340, AutoScroll = true, Padding = new Padding(10, 6, 10, 6), BackColor = Theme.Card };
         var form = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
@@ -213,7 +213,7 @@ sealed class MainForm : Form
         var tunnelHelp = new Label
         {
             Text = "Each checked tunnel sends real keepalive and handshake probes with its own timers over this link. A tunnel drops only if the link loses enough of them.",
-            AutoSize = true, MaximumSize = new Size(300, 0), ForeColor = Color.DimGray, Margin = new Padding(3, 0, 3, 4),
+            AutoSize = true, MaximumSize = new Size(300, 0), ForeColor = Theme.Muted, Margin = new Padding(3, 0, 3, 4),
         };
         form.Controls.Add(tunnelHelp); form.SetColumnSpan(tunnelHelp, 2);
         _tunnelList.Dock = DockStyle.Fill;
@@ -249,8 +249,8 @@ sealed class MainForm : Form
         buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         _start.Font = new Font(Font, FontStyle.Bold);
-        _start.BackColor = Color.FromArgb(0, 120, 212); _start.ForeColor = Color.White; _start.FlatStyle = FlatStyle.Flat;
-        _start.EnabledChanged += (_, _) => _start.BackColor = _start.Enabled ? Color.FromArgb(0, 120, 212) : Color.FromArgb(200, 205, 212);
+        _start.BackColor = Theme.Button; _start.ForeColor = Color.White; _start.FlatStyle = FlatStyle.Flat;
+        _start.EnabledChanged += (_, _) => _start.BackColor = _start.Enabled ? Theme.Button : Theme.ButtonDisabled;
         buttons.Controls.Add(_start);
         buttons.Controls.Add(_stop);
         buttons.Controls.Add(_history);
@@ -262,7 +262,7 @@ sealed class MainForm : Form
                                "(any saved test: History). Available when no test is running.");
         // Only between tests: Start is enabled exactly when no test is running (or connecting) and no update is installing.
         _start.EnabledChanged += (_, _) => _pdf.Enabled = _start.Enabled;
-        var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 100, Padding = new Padding(10, 8, 10, 8), BackColor = Color.FromArgb(235, 238, 242) };
+        var actionBar = new Panel { Dock = DockStyle.Bottom, Height = 100, Padding = new Padding(10, 8, 10, 8), BackColor = Theme.Bar };
         actionBar.Controls.Add(buttons);
 
         var leftColumn = new Panel { Dock = DockStyle.Left, Width = 340 };
@@ -275,16 +275,16 @@ sealed class MainForm : Form
         foreach (var t in new[] { _tUp, _tDown, _tRtt, _tJitter, _tLoss, _tGap, _tRetrans, _tMos, _tBloat, _tTime }) tiles.Controls.Add(t);
         _tUp.Width = _tDown.Width = 175;
 
-        _chartTput.AddSeries("Upload (server rx)", Color.FromArgb(0, 120, 212));
-        _chartTput.AddSeries("Download (client rx)", Color.FromArgb(16, 137, 62));
-        _chartTput.AddSeries("Client tx", Color.FromArgb(170, 170, 170));
-        _chartLat.AddSeries("RTT", Color.FromArgb(202, 80, 16));
-        _chartLat.AddSeries("RTT max", Color.FromArgb(240, 180, 140));
-        _chartLat.AddSeries("Jitter ↑", Color.FromArgb(0, 120, 212));
-        _chartLat.AddSeries("Jitter ↓", Color.FromArgb(16, 137, 62));
-        _chartLat.AddSeries("RTT (TCP)", Color.FromArgb(135, 100, 184));
-        _chartLoss.AddSeries("Loss ↑", Color.FromArgb(0, 120, 212));
-        _chartLoss.AddSeries("Loss ↓", Color.FromArgb(196, 43, 28));
+        _chartTput.AddSeries("Upload (server rx)", Theme.Up);
+        _chartTput.AddSeries("Download (client rx)", Theme.Down);
+        _chartTput.AddSeries("Client tx", Theme.Sent);
+        _chartLat.AddSeries("RTT", Theme.Rtt);
+        _chartLat.AddSeries("RTT max", Theme.RttMax);
+        _chartLat.AddSeries("Jitter ↑", Theme.Up);
+        _chartLat.AddSeries("Jitter ↓", Theme.Down);
+        _chartLat.AddSeries("RTT (TCP)", Theme.RttTcp);
+        _chartLoss.AddSeries("Loss ↑", Theme.Up);
+        _chartLoss.AddSeries("Loss ↓", Theme.LossDown);
 
         var charts = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(4) };
         for (int i = 0; i < 3; i++) charts.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
@@ -376,7 +376,7 @@ sealed class MainForm : Form
 
     void Header(TableLayoutPanel t, string text)
     {
-        var l = new Label { Text = text, AutoSize = true, Font = new Font(Font.FontFamily, 10f, FontStyle.Bold), ForeColor = Color.FromArgb(0, 90, 160), Margin = new Padding(0, 10, 0, 4) };
+        var l = new Label { Text = text, AutoSize = true, Font = new Font(Font.FontFamily, 10f, FontStyle.Bold), ForeColor = Theme.Heading, Margin = new Padding(0, 10, 0, 4) };
         t.Controls.Add(l);
         t.SetColumnSpan(l, 2);
     }
@@ -786,7 +786,7 @@ sealed class MainForm : Form
         if (session.SnmpTest && (int)s.ElapsedSec % 5 == 0) ShowPath(session);
 
         _tUp.Set(Mbps(s.UpMbps), s.UpReportStale ? $"no report for {Fmt(s.UpReportAgeSec, "0.0")} s"
-            : s.Mixed ? $"UDP {Mbps(s.UpMbpsUdp)} · TCP {Mbps(s.UpMbpsTcp)}" : $"sent {Mbps(s.TxMbps)}", s.UpReportStale ? Color.Firebrick : null);
+            : s.Mixed ? $"UDP {Mbps(s.UpMbpsUdp)} · TCP {Mbps(s.UpMbpsTcp)}" : $"sent {Mbps(s.TxMbps)}", s.UpReportStale ? Theme.Poor : null);
         _tDown.Set(Mbps(s.DownMbps), s.Mixed ? $"UDP {Mbps(s.DownMbpsUdp)} · TCP {Mbps(s.DownMbpsTcp)}"
             : double.IsFinite(s.ServerTxMbps) ? $"server sent {Mbps(s.ServerTxMbps)}" : "");
         _tRtt.Set(Ms(s.RttMs), s.Mixed ? $"UDP · TCP {Ms(s.RttTcpMs)}" : $"min {Fmt(s.RttMinMs, "0.0")} / max {Fmt(s.RttMaxMs, "0.0")}",
@@ -798,11 +798,11 @@ sealed class MainForm : Form
         _tGap.Set($"{Fmt(s.UpMaxGapMs, "0")} / {Fmt(s.DownMaxGapMs, "0")}", "ms (last ~2 s)", LevelColor(Math.Max(Z(s.UpMaxGapMs), s.DownMaxGapMs), 250, 1000));
         _tRetrans.Set(session.Config.UsesTcp ? $"{Kb(s.UpRetransBytes)} / {Kb(s.DownRetransBytes)}" : "n/a (UDP)",
             session.Config.UsesTcp ? $"KB/s · RTOs {s.UpTimeoutsTotal} / {s.DownTimeoutsTotal}" : "");
-        _tMos.Set(Fmt(s.Mos, "0.0"), double.IsFinite(s.Mos) ? MosText(s.Mos) : "", s.Mos >= 4 ? Color.ForestGreen : s.Mos >= 3.6 ? Color.DarkOrange : Color.Firebrick);
+        _tMos.Set(Fmt(s.Mos, "0.0"), double.IsFinite(s.Mos) ? MosText(s.Mos) : "", s.Mos >= 4 ? Theme.Good : s.Mos >= 3.6 ? Theme.Fair : Theme.Poor);
         if (s.BaselinePhase) _tBloat.Set("…", $"measuring idle RTT ({session.Config.BaselineSec} s)");
         else if (s.BloatGrade != null)
             _tBloat.Set(s.BloatGrade, $"+{s.BloatIncreaseMs:0.0} ms under load (idle {s.IdleRttMs:0.0})",
-                s.BloatGrade is "A+" or "A" ? Color.ForestGreen : s.BloatGrade is "B" or "C" ? Color.DarkOrange : Color.Firebrick);
+                s.BloatGrade is "A+" or "A" ? Theme.Good : s.BloatGrade is "B" or "C" ? Theme.Fair : Theme.Poor);
         else _tBloat.Set("–", session.Config.BaselineSec == 0 ? "baseline off / server < 1.6" : session.Config.UpMbps + session.Config.DownMbps > 0 ? "measuring under load…" : "no load");
         var el = TimeSpan.FromSeconds(s.ElapsedSec);
         _tTime.Set($"{(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}", session.Config.DurationSec > 0 ? $"of {session.Config.DurationSec} s" : "");
@@ -947,10 +947,10 @@ sealed class MainForm : Form
             it.UseItemStyleForSubItems = true;
             it.BackColor = st.State switch
             {
-                TunnelState.Up when st.Drops == 0 => Color.FromArgb(223, 246, 221),
-                TunnelState.Up => Color.FromArgb(255, 244, 206),
-                TunnelState.Down => Color.FromArgb(253, 231, 233),
-                _ => Color.FromArgb(240, 240, 240),
+                TunnelState.Up when st.Drops == 0 => Theme.GoodBg,
+                TunnelState.Up => Theme.FairBg,
+                TunnelState.Down => Theme.PoorBg,
+                _ => Theme.NeutralBg,
             };
         }
         _tunnelView.EndUpdate();
@@ -1056,8 +1056,8 @@ sealed class MainForm : Form
                 else it.SubItems.Add(cells[c]);
             }
             double loss = Math.Max(Z(k.UpLossPct), Z(k.DownLossPct));
-            it.BackColor = !udp ? (k.UpRetransBytes + k.DownRetransBytes > 0 ? Color.FromArgb(255, 244, 206) : Color.White)
-                : loss >= 3 ? Color.FromArgb(253, 231, 233) : loss >= 0.5 ? Color.FromArgb(255, 244, 206) : Color.FromArgb(223, 246, 221);
+            it.BackColor = !udp ? (k.UpRetransBytes + k.DownRetransBytes > 0 ? Theme.FairBg : Theme.Card)
+                : loss >= 3 ? Theme.PoorBg : loss >= 0.5 ? Theme.FairBg : Theme.GoodBg;
         }
         _classView.EndUpdate();
     }
@@ -1068,7 +1068,7 @@ sealed class MainForm : Form
     readonly FlowLayoutPanel _banner = new()
     {
         Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true,
-        Visible = false, BackColor = Color.FromArgb(255, 244, 206), Padding = new Padding(8, 4, 8, 4),
+        Visible = false, BackColor = Theme.FairBg, Padding = new Padding(8, 4, 8, 4),
     };
     readonly Label _bannerText = new() { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 12, 0) };
     readonly Button _bannerInstall = new() { Text = "Install and restart", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8, 2, 8, 2) };
@@ -1096,8 +1096,34 @@ sealed class MainForm : Form
         _autoCheckItem.CheckedChanged += (_, _) => { _settings.CheckForUpdates = _autoCheckItem.Checked; _settings.Save(); };
         var page = new ToolStripMenuItem("Project page on GitHub");
         page.Click += (_, _) => OpenUrl(Updater.ProjectUrl);
-        menu.DropDownItems.AddRange(new ToolStripItem[] { check, _autoCheckItem, new ToolStripSeparator(), page });
+        menu.DropDownItems.AddRange(new ToolStripItem[] { check, _autoCheckItem, new ToolStripSeparator(), BuildThemeMenu(), new ToolStripSeparator(), page });
         Load += async (_, _) => { if (_settings.CheckForUpdates) await CheckForUpdatesAsync(manual: false); };   // Load: also fires when started minimized
+        return menu;
+    }
+
+    /// <summary>Theme: System / Light / Dark. Windows can't switch a running program's controls, so it restarts.</summary>
+    ToolStripMenuItem BuildThemeMenu()
+    {
+        var menu = new ToolStripMenuItem("Theme");
+        foreach (var (mode, label) in new[] { ("system", "System"), ("light", "Light"), ("dark", "Dark") })
+        {
+            var item = new ToolStripMenuItem(label) { Checked = (_settings.ColorMode ?? "system") == mode };
+            item.Click += (_, _) =>
+            {
+                if (item.Checked) return;
+                foreach (ToolStripMenuItem i in menu.DropDownItems) i.Checked = i == item;
+                _settings.ColorMode = mode;
+                _settings.Save();
+                if (_session != null)
+                {
+                    MessageBox.Show(this, "The new theme applies the next time LinkTest starts.", "LinkTest", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (MessageBox.Show(this, "Restart LinkTest now to apply the new theme?", "LinkTest", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    Application.Restart();
+            };
+            menu.DropDownItems.Add(item);
+        }
         return menu;
     }
 
@@ -1200,6 +1226,6 @@ sealed class MainForm : Form
     static string Mbps(double v) => !double.IsFinite(v) ? "–" : v >= 100 ? $"{v:0} Mbps" : v >= 1 ? $"{v:0.0} Mbps" : $"{v * 1000:0} kbps";
     static string Ms(double v) => double.IsFinite(v) ? (v >= 10 ? $"{v:0} ms" : $"{v:0.0} ms") : "–";
     static string Kb(long bytes) => (bytes / 1024.0).ToString("0.#", CultureInfo.CurrentCulture);
-    static Color? LevelColor(double v, double warn, double bad) => !double.IsFinite(v) ? null : v >= bad ? Color.Firebrick : v >= warn ? Color.DarkOrange : Color.ForestGreen;
+    static Color? LevelColor(double v, double warn, double bad) => !double.IsFinite(v) ? null : v >= bad ? Theme.Poor : v >= warn ? Theme.Fair : Theme.Good;
     static string MosText(double m) => m >= 4.3 ? "excellent" : m >= 4.0 ? "good" : m >= 3.6 ? "fair" : m >= 3.1 ? "poor" : "bad";
 }

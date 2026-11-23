@@ -20,7 +20,7 @@ if (opts == null)
           --max-mbps N          Per-direction rate cap per session (default 1000)
           --max-sessions N      Concurrent sessions allowed (default 8)
           --auto-update         Check GitHub every 6 h; install new versions when no tests are running, then restart
-          --no-update-check     Don't check for new versions at all
+          --no-update-check     Don't check for new versions, even with --auto-update
           --no-ip-lookup        Don't query ipinfo.io for client ISP / location (reverse DNS still shown)
           --require-tls         Refuse clients that don't encrypt the control connection (clients older than 1.9)
           --cert FILE           Server certificate (PFX, created on first start; default: per-user LinkTest folder)
@@ -60,8 +60,8 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 var host = new ServerHost(opts);
 var updater = new ServerUpdateService(host, opts, UpdateChannel.Server, cts);
-updater.UpdateAvailable += _ => { if (!opts.AutoUpdate) ServerHost.Log("Install it with 'LinkTestServer --update' or run with --auto-update."); };
-if (!opts.NoUpdateCheck) _ = updater.RunAsync();
+// Checks for updates only with --auto-update; otherwise 'LinkTestServer --update' checks and installs on request.
+if (opts.AutoUpdate && !opts.NoUpdateCheck) _ = updater.RunAsync();
 
 WebServer? web = null;
 try

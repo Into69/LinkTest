@@ -23,6 +23,7 @@
   <ItemGroup>
     <!-- Shared WinForms help UI (ⓘ explanations) -->
     <Compile Include="..\LinkTest.Client\HelpUi.cs" Link="HelpUi.cs" />
+    <Compile Include="..\LinkTest.Client\Theme.cs" Link="Theme.cs" />
   </ItemGroup>
 
   <ItemGroup>

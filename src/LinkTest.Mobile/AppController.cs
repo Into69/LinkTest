@@ -15,6 +15,8 @@ sealed class MobileSettings
     public double ArtificialLossPct { get; set; }
     public bool IpLookup { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
+    /// <summary>"system" (follow Android), "light" or "dark".</summary>
+    public string ColorMode { get; set; } = "system";
     public bool KeepScreenOn { get; set; }
     /// <summary>Kept for older settings files: tests now always run in the foreground service.</summary>
     public bool KeepRunningInBackground { get; set; } = true;
@@ -74,6 +76,13 @@ sealed class AppController
     public IReadOnlyList<string> LogLines => _log;
 
     public event Action? StateChanged;
+
+    /// <summary>Drops the pages' handlers before the pages are rebuilt (theme change): only pages subscribe to these.</summary>
+    public void DetachUi()
+    {
+        StateChanged = HistoryChanged = PathChanged = null;
+        Sampled = null; LogAdded = null; ConnectionChanged = null;
+    }
     /// <summary>A result was saved or deleted.</summary>
     public event Action? HistoryChanged;
     public ResultStore Results { get; } = new(Path.Combine(FileSystem.AppDataDirectory, "results"));

@@ -17,6 +17,8 @@ sealed class ClientSettings
     public List<TunnelProfile> Tunnels { get; set; } = TunnelPresets.CreateDefaults();
     public bool CheckForUpdates { get; set; } = true;
     public bool IpLookup { get; set; } = true;
+    /// <summary>"system" (follow Windows), "light" or "dark". Applies at startup.</summary>
+    public string ColorMode { get; set; } = "system";
     /// <summary>Report this PC's location with the test data and to the server. Off by default.</summary>
     public bool ShareLocation { get; set; }
     /// <summary>"auto", "4", "6" or "both" (IPv4 then IPv6 with a comparison).</summary>

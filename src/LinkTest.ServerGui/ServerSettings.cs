@@ -16,7 +16,7 @@ sealed class ServerSettings
     public bool StartOnLaunch { get; set; }
     public bool LookupClients { get; set; } = true;
     public bool RequireTls { get; set; }
-    public bool CheckForUpdates { get; set; } = true;
+    /// <summary>Also the only case in which the GUI checks for updates by itself.</summary>
     public bool AutoInstallUpdates { get; set; }
     /// <summary>Browser tests: web page + WebRTC on <see cref="WebPort"/> (TCP + UDP).</summary>
     public bool WebEnabled { get; set; }

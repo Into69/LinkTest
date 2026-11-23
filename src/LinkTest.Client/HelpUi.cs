@@ -9,8 +9,11 @@ namespace LinkTest.WinUi;
 static class HelpUi
 {
     public const string Glyph = "ⓘ";
-    static readonly Color GoodC = Color.FromArgb(26, 127, 55), FairC = Color.FromArgb(179, 89, 0), PoorC = Color.FromArgb(198, 40, 40),
-        MutedC = Color.FromArgb(95, 107, 122), AccentC = Color.FromArgb(0, 95, 184);
+    static Color GoodC => Theme.Dark ? Color.FromArgb(91, 196, 107) : Color.FromArgb(26, 127, 55);
+    static Color FairC => Theme.Dark ? Color.FromArgb(232, 161, 90) : Color.FromArgb(179, 89, 0);
+    static Color PoorC => Theme.Dark ? Color.FromArgb(240, 106, 106) : Color.FromArgb(198, 40, 40);
+    static Color MutedC => Theme.Dark ? Color.FromArgb(160, 166, 176) : Color.FromArgb(95, 107, 122);
+    static Color AccentC => Theme.Accent;
 
     /// <summary>A small clickable ⓘ for one statistic.</summary>
     public static Label InfoLabel(string key, ToolTip tips, DockStyle dock = DockStyle.None)
@@ -53,10 +56,10 @@ static class HelpUi
         };
         var box = new RichTextBox
         {
-            Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Color.White,
+            Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Theme.Card,
             ScrollBars = RichTextBoxScrollBars.Vertical, DetectUrls = false,
         };
-        var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14, 10, 10, 6), BackColor = Color.White };
+        var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14, 10, 10, 6), BackColor = Theme.Card };
         pad.Controls.Add(box);
         var ok = new Button { Text = "Close", DialogResult = DialogResult.OK, AutoSize = true, Anchor = AnchorStyles.Right };
         var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Padding = new Padding(8) };
@@ -70,7 +73,7 @@ static class HelpUi
         void Write(string s, Color? c = null, Font? font = null)
         {
             box.SelectionStart = box.TextLength;
-            box.SelectionColor = c ?? Color.Black;
+            box.SelectionColor = c ?? Theme.Text;
             box.SelectionFont = font ?? f.Font;
             box.AppendText(s);
         }

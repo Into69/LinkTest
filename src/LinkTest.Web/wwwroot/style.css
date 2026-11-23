@@ -13,13 +13,20 @@
   --grid: #ECEEF2;
   color-scheme: light;
 }
+/* Dark: follows the browser unless the page's theme switch forces light (data-theme="light") or dark. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #111419; --card: #1B1F27; --text: #E8EAED; --muted: #A0A6B0; --line: #2C323D;
     --good: #5BC46B; --good-bg: #173322; --warn: #E8A15A; --warn-bg: #3A2C16; --bad: #F06A6A; --bad-bg: #3D1C1F;
     --up: #4FA8F0; --down: #4CC27A; --tx: #6B7280; --rtt: #F08A4B; --rttmax: #7A4A2E; --grid: #252A33;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #111419; --card: #1B1F27; --text: #E8EAED; --muted: #A0A6B0; --line: #2C323D;
+  --good: #5BC46B; --good-bg: #173322; --warn: #E8A15A; --warn-bg: #3A2C16; --bad: #F06A6A; --bad-bg: #3D1C1F;
+  --up: #4FA8F0; --down: #4CC27A; --tx: #6B7280; --rtt: #F08A4B; --rttmax: #7A4A2E; --grid: #252A33;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -41,6 +48,8 @@ h3 { font-size: .95rem; margin: 0; font-weight: 600; }
 .brand small { font-weight: 400; opacity: .75; font-size: .85rem; }
 .bar-right { display: flex; align-items: center; gap: 10px; font-size: .85rem; }
 .bar .muted { color: #C9D2E0; }
+.theme { width: auto; padding: 2px 6px; font-size: .8rem; color: #fff; background: rgba(255,255,255,.15); border-color: rgba(255,255,255,.3); }
+.theme option { color: var(--text); background: var(--card); }
 .badge { padding: 2px 8px; border-radius: 10px; font-size: .78rem; background: rgba(255,255,255,.15); }
 .badge.secure { background: #1F6F3A; }
 .badge.plain { background: #6B4A12; }

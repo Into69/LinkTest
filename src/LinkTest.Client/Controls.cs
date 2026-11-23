@@ -21,7 +21,7 @@ sealed class LineChart : Control
     public LineChart()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
-        BackColor = Color.White;
+        BackColor = Theme.Card;
         Font = new Font("Segoe UI", 8.25f);
     }
 
@@ -94,18 +94,19 @@ sealed class LineChart : Control
                 if (double.IsFinite(v) && v > max) max = v;
         max = NiceCeiling(max * 1.1);
 
-        using var gridPen = new Pen(Color.FromArgb(230, 230, 230));
-        using var axisBrush = new SolidBrush(Color.FromArgb(110, 110, 110));
+        using var gridPen = new Pen(Theme.Grid);
+        using var axisBrush = new SolidBrush(Theme.Axis);
         using var titleFont = new Font(Font, FontStyle.Bold);
         string title = Title + (Unit.Length > 0 ? $" ({Unit})" : "");
-        g.DrawString(title, titleFont, Brushes.Black, 4 * k, 3 * k);
+        using var textBrush = new SolidBrush(Theme.Text);
+        g.DrawString(title, titleFont, textBrush, 4 * k, 3 * k);
         if (_help != null)
         {
             var tsz = g.MeasureString(title, titleFont);
             using var infoFont = new Font("Segoe UI", Font.Size + 1);
             var isz = g.MeasureString(HelpUi.Glyph, infoFont);
             _helpRect = new RectangleF(4 * k + tsz.Width, 1 * k, isz.Width + 2 * k, isz.Height + 2 * k);
-            using var ib = new SolidBrush(Color.FromArgb(0, 95, 184));
+            using var ib = new SolidBrush(Theme.Accent);
             g.DrawString(HelpUi.Glyph, infoFont, ib, _helpRect.X + 1 * k, 2 * k);
         }
 
@@ -117,7 +118,8 @@ sealed class LineChart : Control
             var sz = g.MeasureString(lbl, Font);
             g.DrawString(lbl, Font, axisBrush, plot.Left - sz.Width - 2, y - sz.Height / 2);
         }
-        g.DrawRectangle(Pens.Silver, plot.X, plot.Y, plot.Width, plot.Height);
+        using var framePen = new Pen(Theme.Frame);
+        g.DrawRectangle(framePen, plot.X, plot.Y, plot.Width, plot.Height);
         g.DrawString($"-{Capacity / 60}:{Capacity % 60:00}", Font, axisBrush, plot.Left, plot.Bottom + 1);
         var nowSz = g.MeasureString("now", Font);
         g.DrawString("now", Font, axisBrush, plot.Right - nowSz.Width, plot.Bottom + 1);
@@ -155,7 +157,7 @@ sealed class LineChart : Control
             string txt = $"{s.Name}: {(double.IsFinite(last) ? last.ToString(ValueFormat, CultureInfo.CurrentCulture) : "–")}";
             var sz = g.MeasureString(txt, Font);
             lx -= sz.Width;
-            g.DrawString(txt, Font, Brushes.Black, lx, 4 * k);
+            g.DrawString(txt, Font, textBrush, lx, 4 * k);
             lx -= 12 * k;
             using var b = new SolidBrush(s.Color);
             g.FillRectangle(b, lx, 7 * k, 9 * k, 9 * k);
@@ -176,9 +178,9 @@ sealed class LineChart : Control
 /// <summary>Small "big number" panel.</summary>
 sealed class StatTile : Panel
 {
-    readonly Label _title = new() { Dock = DockStyle.Top, AutoSize = false, Height = 18, ForeColor = Color.FromArgb(90, 90, 90) };
+    readonly Label _title = new() { Dock = DockStyle.Top, AutoSize = false, Height = 18, ForeColor = Theme.Muted };
     readonly Label _value = new() { Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft };
-    readonly Label _sub = new() { Dock = DockStyle.Bottom, AutoSize = false, Height = 18, ForeColor = Color.FromArgb(90, 90, 90) };
+    readonly Label _sub = new() { Dock = DockStyle.Bottom, AutoSize = false, Height = 18, ForeColor = Theme.Muted };
 
     public StatTile(string title)
     {
@@ -186,7 +188,7 @@ sealed class StatTile : Panel
         Height = 78;
         Padding = new Padding(8, 4, 8, 4);
         Margin = new Padding(4);
-        BackColor = Color.White;
+        BackColor = Theme.Card;
         BorderStyle = BorderStyle.FixedSingle;
         _title.Text = title;
         _value.Font = new Font("Segoe UI Semibold", 15f);
@@ -206,7 +208,7 @@ sealed class StatTile : Panel
     public void Set(string value, string sub = "", Color? color = null)
     {
         _value.Text = value;
-        _value.ForeColor = color ?? Color.Black;
+        _value.ForeColor = color ?? Theme.Text;
         _sub.Text = sub;
     }
 }

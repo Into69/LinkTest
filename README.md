@@ -235,11 +235,12 @@ The programs update themselves from this repository's **GitHub Releases**.
 
 - **Client**: checks at startup (this can be turned off in the version menu at the bottom right). When a
   newer release exists, a banner offers *Install and restart*.
-- **Server GUI**: shows an update link in the status bar. It can install updates automatically when no
-  tests are running, and it restarts the server afterwards.
-- **Server**: logs a notice when an update is available. `LinkTestServer --update` installs it now.
-  `--auto-update` checks every 6 hours, installs when no tests are running, and restarts with the same
-  arguments. `--no-update-check` disables checking.
+- **Server GUI**: checks for updates only when *Install updates automatically when no tests are running* is
+  on. It then checks every 6 hours, installs when no tests are running, and restarts the server afterwards.
+  Otherwise it checks only when you click *Check for updates*.
+- **Server**: checks for updates only with `--auto-update`. It then checks every 6 hours, installs when no
+  tests are running, and restarts with the same arguments. `LinkTestServer --update` checks and installs on
+  request.
 - **CLI**: `LinkTestCli --update`.
 - **Offline**: `--update-from LinkTest-Server-win-x64.zip` (server and CLI) installs from a downloaded
   release zip.

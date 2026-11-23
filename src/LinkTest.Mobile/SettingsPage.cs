@@ -23,9 +23,11 @@ sealed class SettingsPage : ContentPage
     readonly Switch _keepOn = new(), _updates = new(), _mtuSw = new(), _traceSw = new(), _locationSw = new(), _tlsSw = new(), _capacitySw = new(), _snmpSw = new();
     static readonly string[] FamilyItems = { "Auto (IPv4 first)", "IPv4 only", "IPv6 only", "IPv4, then IPv6 (compare)" };
     readonly Picker _family = new() { ItemsSource = FamilyItems };
+    static readonly string[] ThemeModes = { "system", "light", "dark" };
+    readonly Picker _theme = new() { ItemsSource = new[] { "System", "Light", "Dark" } };
     readonly Entry _capacityPct = Num();
     readonly Label _batteryState = new() { FontSize = 13, VerticalOptions = LayoutOptions.Center };
-    readonly Button _batteryBtn = new() { Text = "Allow", BackgroundColor = Ui.Accent, TextColor = Colors.White, FontSize = 13, HeightRequest = 40, Padding = new Thickness(12, 0) };
+    readonly Button _batteryBtn = new() { Text = "Allow", BackgroundColor = Ui.ButtonBg, TextColor = Colors.White, FontSize = 13, HeightRequest = 40, Padding = new Thickness(12, 0) };
     readonly Entry _baseline = Num();
     readonly List<(CheckBox box, int index)> _tunnels = new();
     readonly VerticalStackLayout _form;
@@ -81,7 +83,7 @@ sealed class SettingsPage : ContentPage
             int idx = i;
             var box = new CheckBox { IsChecked = st.Tunnels[i].Enabled, Color = Ui.Accent };
             var name = new Label { Text = st.Tunnels[i].Name, VerticalOptions = LayoutOptions.Center, FontSize = 14, LineBreakMode = LineBreakMode.TailTruncation };
-            var edit = new Button { Text = "Edit", FontSize = 13, Padding = new Thickness(12, 0), HeightRequest = 40, VerticalOptions = LayoutOptions.Center, BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent };
+            var edit = new Button { Text = "Edit", FontSize = 13, Padding = new Thickness(12, 0), HeightRequest = 40, VerticalOptions = LayoutOptions.Center, BackgroundColor = Ui.SoftButtonBg, TextColor = Ui.Accent };
             edit.Clicked += async (_, _) =>
             {
                 if (_app.Busy) return;
@@ -119,17 +121,24 @@ sealed class SettingsPage : ContentPage
         oemHint.TextColor = Ui.Accent;
         Ui.OnTap(oemHint, () => _ = Launcher.Default.OpenAsync("https://dontkillmyapp.com"));
         _form.Add(oemHint);
-        var appBattery = new Button { Text = "Open LinkTest's app settings", BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent, FontSize = 13, HeightRequest = 40, HorizontalOptions = LayoutOptions.Start, Margin = new Thickness(0, 4, 0, 0) };
+        var appBattery = new Button { Text = "Open LinkTest's app settings", BackgroundColor = Ui.SoftButtonBg, TextColor = Ui.Accent, FontSize = 13, HeightRequest = 40, HorizontalOptions = LayoutOptions.Start, Margin = new Thickness(0, 4, 0, 0) };
         appBattery.Clicked += (_, _) => AppInfo.Current.ShowSettingsUI();
         _form.Add(appBattery);
 
         _form.Add(Ui.Header("App"));
         SwitchRow("Keep the screen on during a test", _keepOn);
         SwitchRow("Check for updates at startup", _updates);
+        Row("Theme", _theme);
         _form.Add(Ui.Hint($"LinkTest {Updater.CurrentVersion} · {Updater.ProjectUrl}"));
 
         Content = new ScrollView { Content = _form };
         Load();
+        _theme.SelectedIndexChanged += (_, _) =>
+        {
+            if (_theme.SelectedIndex < 0) return;
+            SaveToSettings();
+            App.ApplyTheme(_app.Settings.ColorMode);
+        };
         _proto.SelectedIndexChanged += (_, _) => UpdateEnabled();
         _dscp.SelectedIndexChanged += (_, _) => UpdateEnabled();
         _profile.SelectedIndexChanged += (_, _) => UpdateEnabled();
@@ -213,6 +222,7 @@ sealed class SettingsPage : ContentPage
         _capacitySw.IsToggled = st.CapacityTest;
         _capacityPct.Text = st.CapacityPct.ToString("0", CultureInfo.CurrentCulture);
         _updates.IsToggled = st.CheckForUpdates;
+        _theme.SelectedIndex = Math.Max(0, Array.IndexOf(ThemeModes, st.ColorMode));
     }
 
     public void SaveToSettings()
@@ -248,6 +258,7 @@ sealed class SettingsPage : ContentPage
         st.CapacityTest = _capacitySw.IsToggled;
         st.CapacityPct = Dbl(_capacityPct, st.CapacityPct, 10, 100);
         st.CheckForUpdates = _updates.IsToggled;
+        if (_theme.SelectedIndex >= 0) st.ColorMode = ThemeModes[_theme.SelectedIndex];
         st.Save();
     }
 

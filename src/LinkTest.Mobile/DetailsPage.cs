@@ -229,7 +229,7 @@ sealed class DetailsPage : ContentPage
 
         public TunnelCard()
         {
-            Stroke = Color.FromArgb("#DDDDDD");
+            Stroke = Ui.CardStroke;
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 6 };
             Padding = new Thickness(10, 6);
             Content = new VerticalStackLayout { Spacing = 1, Children = { _name, _state, _stats, _event } };
@@ -246,7 +246,7 @@ sealed class DetailsPage : ContentPage
                 TunnelState.Up when st.Drops == 0 => Ui.GoodBg,
                 TunnelState.Up => Ui.WarnBg,
                 TunnelState.Down => Ui.BadBg,
-                _ => Color.FromArgb("#F0F0F0"),
+                _ => Ui.NeutralBg,
             };
         }
     }
@@ -259,7 +259,7 @@ sealed class DetailsPage : ContentPage
 
         public ClassCard()
         {
-            Stroke = Color.FromArgb("#DDDDDD");
+            Stroke = Ui.CardStroke;
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 6 };
             Padding = new Thickness(10, 6);
             Content = new VerticalStackLayout { Spacing = 1, Children = { _name, _line1, _line2 } };
@@ -274,7 +274,7 @@ sealed class DetailsPage : ContentPage
             _line2.Text = $"jitter {Ui.Fmt(k.UpJitterMs, "0.00")} / {Ui.Fmt(k.DownJitterMs, "0.00")} ms · RTT {Ui.Ms(k.RttMs)}" +
                           (udp ? $" · lost {k.UpLostTotal} / {k.DownLostTotal}" : $" · retrans {k.UpRetransBytes / 1024.0:0.#} / {k.DownRetransBytes / 1024.0:0.#} KB");
             double loss = Math.Max(Ui.Z(k.UpLossPct), Ui.Z(k.DownLossPct));
-            BackgroundColor = !udp ? Colors.White : loss >= 3 ? Ui.BadBg : loss >= 0.5 ? Ui.WarnBg : Ui.GoodBg;
+            BackgroundColor = !udp ? Ui.CardBg : loss >= 3 ? Ui.BadBg : loss >= 0.5 ? Ui.WarnBg : Ui.GoodBg;
         }
     }
 }

@@ -11,7 +11,7 @@ sealed class LogPage : ContentPage
     public LogPage()
     {
         Title = "Log";
-        BackgroundColor = Colors.White;
+        BackgroundColor = Ui.CardBg;
         _scroll = new ScrollView { Content = new VerticalStackLayout { Padding = new Thickness(8), Children = { _text } } };
         Content = _scroll;
         _app.LogAdded += _ => { _dirty = true; if (IsVisible) Render(); };

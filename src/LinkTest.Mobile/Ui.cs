@@ -6,16 +6,38 @@ namespace LinkTest.Mobile;
 /// <summary>Colours, formatting and small control factories shared by the pages.</summary>
 static class Ui
 {
-    public static readonly Color Brand = Color.FromArgb("#0B1E3A");
-    public static readonly Color Accent = Color.FromArgb("#0078D4");
-    public static readonly Color PageBg = Color.FromArgb("#F5F6F8");
-    public static readonly Color Muted = Color.FromArgb("#5A5A5A");
-    public static readonly Color Good = Color.FromArgb("#228B22");
-    public static readonly Color Warn = Color.FromArgb("#D2691E");
-    public static readonly Color Bad = Color.FromArgb("#B22222");
-    public static readonly Color GoodBg = Color.FromArgb("#DFF6DD");
-    public static readonly Color WarnBg = Color.FromArgb("#FFF4CE");
-    public static readonly Color BadBg = Color.FromArgb("#FDE7E9");
+    /// <summary>
+    /// Dark theme in effect (the app's Theme setting, or Android's when it is "System"). The pages read the colours
+    /// below when they are built: <see cref="App.ApplyTheme"/> rebuilds them after a change.
+    /// </summary>
+    public static bool Dark => Application.Current?.RequestedTheme == AppTheme.Dark;
+    static Color C(string light, string dark) => Color.FromArgb(Dark ? dark : light);
+
+    public static Color Brand => C("#0B1E3A", "#E8EAED");
+    public static Color Accent => C("#0078D4", "#4FA8F0");
+    /// <summary>Filled buttons (white text): the same blue in both themes.</summary>
+    public static readonly Color ButtonBg = Color.FromArgb("#0078D4");
+    /// <summary>Light buttons with <see cref="Accent"/> text.</summary>
+    public static Color SoftButtonBg => C("#E8EEF6", "#22324A");
+    public static Color PageBg => C("#F5F6F8", "#111419");
+    public static Color CardBg => C("#FFFFFF", "#1B1F27");
+    public static Color CardStroke => C("#DDDDDD", "#2C323D");
+    public static Color Text => C("#000000", "#E8EAED");
+    public static Color Muted => C("#5A5A5A", "#A0A6B0");
+    public static Color Good => C("#228B22", "#5BC46B");
+    public static Color Warn => C("#D2691E", "#E8A15A");
+    public static Color Bad => C("#B22222", "#F06A6A");
+    public static Color GoodBg => C("#DFF6DD", "#173322");
+    public static Color WarnBg => C("#FFF4CE", "#3A2C16");
+    public static Color BadBg => C("#FDE7E9", "#3D1C1F");
+    public static Color NeutralBg => C("#F0F0F0", "#2A2F38");
+    public static Color ChartGrid => C("#E6E6E6", "#252A33");
+    public static Color ChartFrame => C("#C0C0C0", "#3A404B");
+    // Chart series.
+    public static Color Up => C("#0078D4", "#4FA8F0");
+    public static Color Down => C("#10893E", "#4CC27A");
+    public static Color Rtt => C("#CA5010", "#F08A4B");
+    public static Color LossDown => C("#C42B1C", "#F06A6A");
 
     public static string Fmt(double v, string f) => double.IsFinite(v) ? v.ToString(f, CultureInfo.CurrentCulture) : "–";
     public static double Z(double v) => double.IsFinite(v) ? v : 0;
@@ -68,7 +90,7 @@ static class Ui
 
     public static Border Card(View content) => new()
     {
-        Content = content, BackgroundColor = Colors.White, Stroke = Color.FromArgb("#DDDDDD"), StrokeThickness = 1,
+        Content = content, BackgroundColor = Ui.CardBg, Stroke = Ui.CardStroke, StrokeThickness = 1,
         Padding = new Thickness(10, 8), Margin = new Thickness(0, 4),
         StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 6 },
     };
@@ -77,7 +99,7 @@ static class Ui
 /// <summary>"Big number" tile.</summary>
 sealed class Tile : Border
 {
-    readonly Label _value = new() { Text = "–", FontSize = 22, FontAttributes = FontAttributes.Bold, TextColor = Colors.Black };
+    readonly Label _value = new() { Text = "–", FontSize = 22, FontAttributes = FontAttributes.Bold, TextColor = Ui.Text };
     readonly Label _sub = new() { FontSize = 11, TextColor = Ui.Muted, LineBreakMode = LineBreakMode.TailTruncation };
 
     /// <param name="helpKey">StatHelp key: the title gets an ⓘ and tapping the tile explains the statistic.</param>
@@ -88,8 +110,8 @@ sealed class Tile : Border
             title += " " + Ui.InfoGlyph;
             Ui.OnTap(this, () => Ui.ShowHelp(helpKey));
         }
-        BackgroundColor = Colors.White;
-        Stroke = Color.FromArgb("#DDDDDD");
+        BackgroundColor = Ui.CardBg;
+        Stroke = Ui.CardStroke;
         StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 6 };
         Padding = new Thickness(10, 6);
         Content = new VerticalStackLayout
@@ -102,7 +124,7 @@ sealed class Tile : Border
     public void Set(string value, string sub = "", Color? color = null)
     {
         _value.Text = value;
-        _value.TextColor = color ?? Colors.Black;
+        _value.TextColor = color ?? Ui.Text;
         _sub.Text = sub;
     }
 }
@@ -135,7 +157,7 @@ sealed class ChartDrawable : IDrawable
 
     public void Draw(ICanvas canvas, RectF r)
     {
-        canvas.FillColor = Colors.White;
+        canvas.FillColor = Ui.CardBg;
         canvas.FillRectangle(r);
         const float left = 38, top = 36, right = 8, bottom = 16;
         var plot = new RectF(r.X + left, r.Y + top, r.Width - left - right, r.Height - top - bottom);
@@ -146,7 +168,7 @@ sealed class ChartDrawable : IDrawable
         max = NiceCeiling(max * 1.1);
 
         canvas.FontSize = 12;
-        canvas.FontColor = Colors.Black;
+        canvas.FontColor = Ui.Text;
         canvas.Font = Microsoft.Maui.Graphics.Font.DefaultBold;
         canvas.DrawString(Title + (Unit.Length > 0 ? $" ({Unit})" : "") + (ShowInfo ? " " + Ui.InfoGlyph : ""), r.X + 4, r.Y + 1, r.Width - 8, 16, HorizontalAlignment.Left, VerticalAlignment.Top);
         canvas.Font = Microsoft.Maui.Graphics.Font.Default;
@@ -162,12 +184,12 @@ sealed class ChartDrawable : IDrawable
             if (lx + 12 + w > r.Right) break;
             canvas.FillColor = color;
             canvas.FillRectangle(lx, r.Y + 21, 8, 8);
-            canvas.FontColor = Colors.Black;
+            canvas.FontColor = Ui.Text;
             canvas.DrawString(txt, lx + 11, r.Y + 17, w, 14, HorizontalAlignment.Left, VerticalAlignment.Top);
             lx += 12 + w + 6;
         }
 
-        canvas.StrokeColor = Color.FromArgb("#E6E6E6");
+        canvas.StrokeColor = Ui.ChartGrid;
         canvas.StrokeSize = 1;
         canvas.FontColor = Ui.Muted;
         for (int i = 0; i <= 4; i++)
@@ -177,7 +199,7 @@ sealed class ChartDrawable : IDrawable
             canvas.DrawString((max * i / 4).ToString(max < 10 ? "0.##" : "0", CultureInfo.CurrentCulture),
                 r.X, y - 7, left - 4, 14, HorizontalAlignment.Right, VerticalAlignment.Center);
         }
-        canvas.StrokeColor = Colors.Silver;
+        canvas.StrokeColor = Ui.ChartFrame;
         canvas.DrawRectangle(plot);
         canvas.DrawString($"-{Capacity / 60}:{Capacity % 60:00}", plot.Left, plot.Bottom + 1, 60, 14, HorizontalAlignment.Left, VerticalAlignment.Top);
         canvas.DrawString("now", plot.Right - 40, plot.Bottom + 1, 40, 14, HorizontalAlignment.Right, VerticalAlignment.Top);

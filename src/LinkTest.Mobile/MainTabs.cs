@@ -10,12 +10,12 @@ sealed class MainTabs : Microsoft.Maui.Controls.TabbedPage
     readonly AppController _app = AppController.Instance;
     readonly ToolbarItem _startStop = new() { Text = "START", Order = ToolbarItemOrder.Primary };
     readonly SettingsPage _settings = new();
-    bool _checkedUpdates;
+    static bool _checkedUpdates;   // static: the tabs are built again when the theme changes
 
     public MainTabs()
     {
         Title = $"LinkTest v{Updater.CurrentVersion}";
-        BarBackgroundColor = Colors.White;
+        BarBackgroundColor = Ui.CardBg;
         SelectedTabColor = Ui.Accent;
         UnselectedTabColor = Ui.Muted;
         On<Microsoft.Maui.Controls.PlatformConfiguration.Android>().SetToolbarPlacement(ToolbarPlacement.Bottom);

@@ -13,15 +13,24 @@ public class MainActivity : MauiAppCompatActivity
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
-        // Light top bar to match the white tab bar: white status bar with dark icons (the area behind the status
-        // bar on Android 15+ edge-to-edge is the window background).
+        ApplySystemBars();
+    }
+
+    /// <summary>
+    /// Top bar matching the app's bar (white, or dark in the dark theme), with icons that contrast with it. On
+    /// Android 15+ edge-to-edge, the area behind the status bar is the window background.
+    /// </summary>
+    public void ApplySystemBars()
+    {
         var w = Window;
         if (w == null) return;
-        w.DecorView.SetBackgroundColor(Android.Graphics.Color.White);
+        bool dark = Ui.Dark;
+        var bg = dark ? Android.Graphics.Color.ParseColor("#1B1F27") : Android.Graphics.Color.White;
+        w.DecorView.SetBackgroundColor(bg);
 #pragma warning disable CA1422 // ignored on Android 15+, where the background above shows instead
-        w.SetStatusBarColor(Android.Graphics.Color.White);
+        w.SetStatusBarColor(bg);
 #pragma warning restore CA1422
         var insets = WindowCompat.GetInsetsController(w, w.DecorView);
-        insets.AppearanceLightStatusBars = true;
+        if (insets != null) insets.AppearanceLightStatusBars = !dark;
     }
 }

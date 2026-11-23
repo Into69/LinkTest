@@ -14,8 +14,8 @@ const store = {
 
 // ───────────── Presets ─────────────
 const PRESETS = {
-  speedtest: { label: 'Speed test', protocol: 'speed', streams: 6, downSec: 10, upSec: 10, baselineSec: 2,
-            hint: 'Finds your maximum download and upload: idle latency first, then 10 s of download and 10 s of upload over 6 TCP connections, with latency measured under load.' },
+  speedtest: { label: 'Speed test', protocol: 'speed', streams: 6, downSec: 10, upSec: 10, baselineSec: 2, snmp: true,
+            hint: 'Finds your maximum download and upload: idle latency first, then 10 s of download and 10 s of upload over 6 TCP connections, with latency measured under load. When the server offers it, the SNMP test runs alongside, to show whether SNMP monitoring still gets through on a full link.' },
   tcp:    { label: 'TCP load', protocol: 'tcp', profile: 'constant', upMbps: 20, downMbps: 50, durationSec: 20, streams: 4,
             hint: 'Steady TCP traffic both ways at the rates you set, over 4 connections.' },
   video:  { label: 'Video call', protocol: 'udp', profile: 'video', upMbps: 2.5, downMbps: 2.5, durationSec: 60, packetSize: 1200,
@@ -666,6 +666,16 @@ async function loadHistory() {
 // ───────────── Start-up ─────────────
 async function init() {
   buildCharts();
+  // Theme switch: System (follow the browser) / Light / Dark; theme.js applied the saved one before the first paint.
+  const theme = $('theme'), redraw = () => Object.values(charts).forEach(c => c.draw());
+  theme.value = document.documentElement.dataset.theme || 'system';
+  theme.onchange = () => {
+    if (theme.value === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme.value;
+    store.set('theme', theme.value);
+    redraw();
+  };
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
   const pre = $('presets');
   for (const [name, p] of Object.entries(PRESETS)) {
     const b = document.createElement('button');

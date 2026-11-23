@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using LinkTest.Core;
+using LinkTest.WinUi;
 
 namespace LinkTest.Client;
 
@@ -9,7 +10,7 @@ sealed class HistoryForm : Form
 {
     readonly ResultStore _store;
     readonly ListView _list = new() { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, MultiSelect = true };
-    readonly Label _info = new() { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(8, 10, 8, 0) };
+    readonly Label _info = new() { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(8, 10, 8, 0) };
     List<SavedResult> _items = new();
 
     public HistoryForm(ResultStore store)

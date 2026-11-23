@@ -71,7 +71,7 @@ sealed class HistoryPage : ContentPage
 
     static Button Btn(string text, Func<Task> onClick)
     {
-        var b = new Button { Text = text, FontSize = 13, Padding = new Thickness(12, 0), HeightRequest = 40, MinimumHeightRequest = 40, Margin = new Thickness(0, 6, 6, 0), BackgroundColor = Color.FromArgb("#E8EEF6"), TextColor = Ui.Accent };
+        var b = new Button { Text = text, FontSize = 13, Padding = new Thickness(12, 0), HeightRequest = 40, MinimumHeightRequest = 40, Margin = new Thickness(0, 6, 6, 0), BackgroundColor = Ui.SoftButtonBg, TextColor = Ui.Accent };
         b.Clicked += async (_, _) => await onClick();
         return b;
     }

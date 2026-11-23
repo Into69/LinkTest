@@ -90,12 +90,21 @@ sealed class ServerForm : Form
         Load += async (_, _) =>
         {
             if (autoStart || _settings.StartOnLaunch) StartServer();
-            if (_settings.CheckForUpdates)
+            // Automatic checks only when updates are installed automatically; otherwise only on request.
+            if (_autoInstall.Checked)
             {
                 _updateTimer.Start();
                 await Task.Delay(3000);
-                await CheckForUpdatesAsync(false);
+                if (_autoInstall.Checked) await CheckForUpdatesAsync(false);
             }
+        };
+        _autoInstall.CheckedChanged += async (_, _) =>
+        {
+            _settings.AutoInstallUpdates = _autoInstall.Checked;
+            _settings.Save();
+            if (!_autoInstall.Checked) { _updateTimer.Stop(); return; }
+            _updateTimer.Start();
+            await CheckForUpdatesAsync(false);
         };
     }
 
@@ -231,13 +240,6 @@ sealed class ServerForm : Form
         var menu = new ToolStripDropDownButton($"v{Updater.CurrentVersion}") { Alignment = ToolStripItemAlignment.Right };
         var check = new ToolStripMenuItem("Check for updates now");
         check.Click += async (_, _) => await CheckForUpdatesAsync(true);
-        var auto = new ToolStripMenuItem("Check for updates automatically") { CheckOnClick = true, Checked = _settings.CheckForUpdates };
-        auto.CheckedChanged += (_, _) =>
-        {
-            _settings.CheckForUpdates = auto.Checked;
-            _settings.Save();
-            if (auto.Checked) _updateTimer.Start(); else _updateTimer.Stop();
-        };
         var page = new ToolStripMenuItem("Project page on GitHub");
         page.Click += (_, _) => OpenUrl(Updater.ProjectUrl);
         var webResults = new ToolStripMenuItem("Open browser test results folder");
@@ -246,7 +248,7 @@ sealed class ServerForm : Form
             Directory.CreateDirectory(ServerOptions.DefaultWebResultsFolder);
             OpenUrl(ServerOptions.DefaultWebResultsFolder);
         };
-        menu.DropDownItems.AddRange(new ToolStripItem[] { check, auto, new ToolStripSeparator(), webResults, page });
+        menu.DropDownItems.AddRange(new ToolStripItem[] { check, new ToolStripSeparator(), webResults, page });
         return menu;
     }
 
