@@ -114,6 +114,14 @@ What runs in the browser:
   - on high-latency links (satellite, 700 ms+) TCP needs several seconds to reach full speed: the page
     measures the round-trip time first and leaves out more ramp-up (about 7 s at 700 ms). Each phase is
     lengthened so that at least 6 seconds are measured.
+- **Network test** runs a speed test, then each part you tick, one after the other:
+  - TCP load (20 s), UDP load (30 s) and mixed UDP + TCP (30 s), each at a share of the speed test's
+    download and upload (80% by default, adjustable). UDP load stays within the browser limit below;
+  - a video call, a VoIP call and gaming (60 s each) at their own rates;
+  - the SNMP test alongside every part, including the speed test, when the server offers it.
+
+  The speed test always runs, because it sizes the load parts. Each part is saved as its own test with its
+  own reports, and the *Network test* card lists them with links. *Stop* ends the whole run.
 - **UDP-style traffic** uses a WebRTC data channel set to unreliable and unordered, so it measures real UDP
   packets with real loss, jitter and gaps. It is limited to 25 Mbps per direction, because browsers' WebRTC
   stops behaving like plain UDP above that.

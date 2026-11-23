@@ -14,8 +14,10 @@ const store = {
 
 // ───────────── Presets ─────────────
 const PRESETS = {
-  speedtest: { label: 'Speed test', protocol: 'speed', streams: 6, downSec: 10, upSec: 10, baselineSec: 2, snmp: true,
-            hint: 'Finds your maximum download and upload: idle latency first, then 10 s of download and 10 s of upload over 6 TCP connections, with latency measured under load. When the server offers it, the SNMP test runs alongside, to show whether SNMP monitoring still gets through on a full link.' },
+  speedtest: { label: 'Speed test', protocol: 'speed', streams: 6, downSec: 10, upSec: 10, baselineSec: 2,
+            hint: 'Finds your maximum download and upload: idle latency first, then 10 s of download and 10 s of upload over 6 TCP connections, with latency measured under load.' },
+  network: { label: 'Network test', network: true,
+            hint: "A speed test, then each part you tick, one after the other. The TCP, UDP and mixed loads run at a share of the speed test's result; the calls and gaming use their own rates. Each part is saved as its own test." },
   tcp:    { label: 'TCP load', protocol: 'tcp', profile: 'constant', upMbps: 20, downMbps: 50, durationSec: 20, streams: 4,
             hint: 'Steady TCP traffic both ways at the rates you set, over 4 connections.' },
   video:  { label: 'Video call', protocol: 'udp', profile: 'video', upMbps: 2.5, downMbps: 2.5, durationSec: 60, packetSize: 1200,
@@ -60,13 +62,20 @@ function updateVisibility() {
       : f === 'udp' ? (speed || p === 'tcp' || prof === 'voip') : f === 'tcp' ? p === 'udp' : f === 'mixed' ? p !== 'mixed'
       : f === 'bursty' ? (speed || prof !== 'bursty') : false;
   });
-  if (!test) { buildTiles(speed ? 'speed' : 'normal'); $('lossCard').hidden = speed; $('snmpCard').hidden = !$('snmp').checked; }
+  if (test || net) return;
+  if (currentPreset === 'network') { buildTiles('speed'); $('lossCard').hidden = true; $('snmpCard').hidden = !$('netSnmp').checked; return; }
+  buildTiles(speed ? 'speed' : 'normal'); $('lossCard').hidden = speed; $('snmpCard').hidden = !$('snmp').checked;
 }
 
+let currentPreset = 'speedtest';
 function applyPreset(name, save = true) {
   const p = PRESETS[name];
   if (!p) return;
-  if (name !== 'custom') writeForm({ ...DEFAULTS, ...p });
+  currentPreset = name;
+  $('formGrid').hidden = !!p.network;
+  $('netPanel').hidden = !p.network;
+  if (p.network) updateVisibility();
+  else if (name !== 'custom') writeForm({ ...DEFAULTS, ...p });
   document.querySelectorAll('#presets button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.preset === name)));
   $('presetHint').textContent = p.hint;
   if (save) store.set('preset', name);
@@ -260,10 +269,11 @@ function onMessage(m) {
     case 'error':
       status(m.msg, true);
       if (test && !test.go) cleanupTest();
+      if (net && !test) abortNetwork(m.msg);
       if (/key/i.test(m.msg)) { $('keyRow').hidden = false; $('key').focus(); }
       updateStart();
       break;
-    case 'started': setupTest(m).catch(err => { status(err.message, true); send({ t: 'stop' }); cleanupTest(); }); break;
+    case 'started': setupTest(m).catch(err => { status(err.message, true); send({ t: 'stop' }); cleanupTest(); if (net) abortNetwork(err.message); }); break;
     case 'answer': (m.link ? test?.snmpLinks?.[m.link]?.onAnswer : test?.onAnswer)?.(m.sdp); break;
     case 'cand': (m.link ? test?.snmpLinks?.[m.link]?.onCandidate : test?.onCandidate)?.(m.c, m.mid); break;
     case 'go': beginLoad(); break;
@@ -278,15 +288,17 @@ function onMessage(m) {
 }
 
 // ───────────── Running a test ─────────────
-function startTest() {
+/** Runs one test. The Network test passes each part's settings; otherwise they come from the form. */
+function startTest(cfg = null) {
   if (!ready || test) return;
-  const cfg = readForm();
+  const fromForm = !cfg;
+  cfg ??= readForm();
   const maxUdp = info?.maxUdpMbps ?? 25;
   if (cfg.protocol === 'udp' && (cfg.upMbps > maxUdp || cfg.downMbps > maxUdp)) {
     status(`UDP-style tests go up to ${maxUdp} Mbps each way in a browser. Use a TCP or mixed test for higher rates.`, true);
     return;
   }
-  store.set('settings', JSON.stringify(cfg));
+  if (fromForm) store.set('settings', JSON.stringify(cfg));
   $('result').hidden = true;
   buildTiles(cfg.protocol === 'speed' ? 'speed' : 'normal');
   resetTiles();
@@ -571,11 +583,12 @@ function onSpeedSample(t, s) {
 }
 
 function stopTest() {
-  if (!test) return;
+  if (net) net.stopped = true;
+  if (!test) { if (net) finishNetwork('stopped'); return; }
   test.stopRequested = true;
   status('Stopping…');
   send({ t: 'stop' });
-  if (!test.go) cleanupTest();
+  if (!test.go) { cleanupTest(); if (net) finishNetwork('stopped'); }
 }
 
 function onDone(m) {
@@ -585,9 +598,10 @@ function onDone(m) {
   status('Idle · ' + m.reason + (t?.hiddenAt ? ' · the tab was in the background during the test, which can lower the figures' : ''));
   if (m.file) showResult(m);
   loadHistory();
+  if (net) netPartDone(m);
 }
 
-function finishTest(reason) { cleanupTest(); status('Idle · ' + reason, true); }
+function finishTest(reason) { cleanupTest(); status('Idle · ' + reason, true); if (net) abortNetwork(reason); }
 
 function cleanupTest() {
   const t = test;
@@ -606,10 +620,145 @@ function cleanupTest() {
 
 function updateStart() {
   const b = $('start');
-  b.textContent = test ? 'Stop' : 'Start test';
-  b.classList.toggle('stop', !!test);
-  b.disabled = !ready && !test;
+  const busy = !!(test || net);
+  b.textContent = busy ? 'Stop' : 'Start test';
+  b.classList.toggle('stop', busy);
+  b.disabled = !ready && !busy;
 }
+
+// ───────────── Network test ─────────────
+// A speed test, then the ticked parts one after the other. The load parts are sized from the speed test.
+const NET_PARTS = [
+  { id: 'tcp',   label: 'TCP load',   preset: 'tcp',   scaled: true },
+  { id: 'udp',   label: 'UDP load',   cfg: { protocol: 'udp', profile: 'constant', durationSec: 30, packetSize: 1200 }, scaled: true, udp: true },
+  { id: 'mixed', label: 'Mixed',      preset: 'mixed', scaled: true, udp: true },
+  { id: 'video', label: 'Video call', preset: 'video', udp: true },
+  { id: 'voip',  label: 'VoIP call',  preset: 'voip',  udp: true },
+  { id: 'game',  label: 'Gaming',     preset: 'game',  udp: true },
+];
+const NET_DEFAULTS = { parts: { tcp: true, udp: true, mixed: true, video: true, voip: true, game: true }, pct: 80, snmp: true };
+let net = null;
+
+function loadNetOptions() {
+  let o = null;
+  try { o = JSON.parse(store.get('network') || 'null'); } catch { }
+  o = { ...NET_DEFAULTS, ...o, parts: { ...NET_DEFAULTS.parts, ...o?.parts } };
+  for (const p of NET_PARTS) $('net-' + p.id).checked = !!o.parts[p.id];
+  $('netPct').value = o.pct;
+  $('netSnmp').checked = !!o.snmp;
+}
+function readNetOptions() {
+  const parts = {};
+  for (const p of NET_PARTS) parts[p.id] = $('net-' + p.id).checked;
+  const pct = Number($('netPct').value);
+  return { parts, pct: Number.isFinite(pct) && pct > 0 ? Math.min(100, Math.max(10, pct)) : NET_DEFAULTS.pct, snmp: $('netSnmp').checked };
+}
+function saveNetOptions() { store.set('network', JSON.stringify(readNetOptions())); }
+
+/** A preset's test settings (without its label and hint). */
+function presetConfig(name) { const { label, hint, ...p } = PRESETS[name]; return { ...DEFAULTS, ...p }; }
+
+function startNetwork() {
+  if (!ready || test || net) return;
+  const o = readNetOptions();
+  $('netPct').value = o.pct;
+  saveNetOptions();
+  const steps = [{ id: 'speed', label: 'Speed test' }, ...NET_PARTS].map(p => ({
+    ...p, state: p.id === 'speed' || (o.parts[p.id] && !$('net-' + p.id).disabled) ? 'pending' : 'skipped',
+  }));
+  net = { o, snmp: o.snmp && !$('netSnmp').disabled, steps, i: 0, stopped: false, speed: null };
+  $('netResult').hidden = false;
+  renderNetwork();
+  updateStart();
+  runNetworkPart();
+}
+
+function runNetworkPart() {
+  while (net.i < net.steps.length && net.steps[net.i].state === 'skipped') net.i++;
+  if (net.i >= net.steps.length) { finishNetwork('finished'); return; }
+  const s = net.steps[net.i];
+  let cfg;
+  if (s.id === 'speed') cfg = presetConfig('speedtest');
+  else {
+    cfg = s.preset ? presetConfig(s.preset) : { ...DEFAULTS, ...s.cfg };
+    if (s.scaled) {
+      const k = net.o.pct / 100, cap = s.id === 'udp' ? (info?.maxUdpMbps ?? 25) : Infinity;
+      cfg.upMbps = round2(Math.min(net.speed.up * k, cap));
+      cfg.downMbps = round2(Math.min(net.speed.down * k, cap));
+      s.rates = `at ↑ ${mbps(cfg.upMbps)} · ↓ ${mbps(cfg.downMbps)}` +
+        (cfg.upMbps < round2(net.speed.up * k) || cfg.downMbps < round2(net.speed.down * k) ? ` (browser limit ${cap} Mbps)` : '');
+    }
+  }
+  cfg.snmp = net.snmp;
+  s.state = 'running';
+  renderNetwork();
+  startTest(cfg);
+  const run = net.steps.filter(x => x.state !== 'skipped');
+  status(`Network test · part ${run.indexOf(s) + 1} of ${run.length}: ${s.label}…`);
+}
+
+function netPartDone(m) {
+  const s = net.steps[net.i];
+  s.result = m;
+  if (net.stopped) { s.state = 'stopped'; finishNetwork('stopped'); return; }
+  s.state = 'done';
+  if (s.id === 'speed') {
+    const sp = m.speed;
+    if (!sp || !(sp.down > 0) || !(sp.up > 0)) {
+      s.state = 'failed';
+      s.note = "didn't measure both directions";
+      finishNetwork("stopped: the speed test didn't measure both directions, so the load parts can't be sized", true);
+      return;
+    }
+    net.speed = { up: sp.up, down: sp.down };
+  }
+  net.i++;
+  renderNetwork();
+  // A short pause so the next part's idle baseline isn't measured while the last one drains.
+  setTimeout(() => { if (net && !net.stopped && !test) runNetworkPart(); }, 2000);
+}
+
+function abortNetwork(reason) {
+  if (!net) return;
+  const s = net.steps[net.i];
+  if (s && s.state === 'running') { s.state = 'failed'; s.note = reason; }
+  finishNetwork('stopped: ' + reason, true);
+}
+
+function finishNetwork(how, err = false) {
+  if (!net) return;
+  for (const s of net.steps) {
+    if (s.state === 'running') s.state = 'stopped';
+    else if (s.state === 'pending') { s.state = 'skipped'; s.note = 'not run'; }
+  }
+  renderNetwork();
+  const done = net.steps.filter(s => s.state === 'done').length;
+  net = null;
+  updateStart();
+  status(`Idle · Network test ${how} · ${done} part(s) done`, err);
+}
+
+function renderNetwork() {
+  if (!net) return;
+  const pct = net.o.pct;
+  $('netSteps').replaceChildren(...net.steps.map(s => {
+    const li = document.createElement('li');
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = s.label;
+    const state = document.createElement('span'); state.className = 'state ' + s.state;
+    state.textContent = { pending: 'waiting', running: 'running', done: 'done', failed: 'failed', stopped: 'stopped', skipped: 'skipped' }[s.state];
+    const detail = document.createElement('span'); detail.className = 'detail';
+    const sp = s.result?.speed;
+    detail.textContent = s.note && s.state !== 'done' ? s.note
+      : s.state === 'skipped' ? ''
+      : sp ? `↓ ${mbps(sp.down)} · ↑ ${mbps(sp.up)} · ${fmt(sp.idleRtt)} ms idle` + (sp.bloat ? ` · bufferbloat ${sp.bloat}` : '')
+      : s.result?.summary ? (s.rates ? s.rates + ' · ' : '') + s.result.summary
+      : s.rates ?? (s.id === 'speed' ? 'sizes the load parts' : s.scaled ? `at ${pct}% of the speed test` : 'its own rates');
+    li.append(name, state, detail);
+    if (s.result?.file) { const links = document.createElement('span'); links.className = 'links'; reportLinks(s.result.file, links); li.append(links); }
+    return li;
+  }));
+}
+const round2 = v => Math.round(v * 100) / 100;
 
 // ───────────── Results ─────────────
 const keyQuery = () => $('key').value ? '?key=' + encodeURIComponent($('key').value) : '';
@@ -683,6 +832,7 @@ async function init() {
     b.onclick = () => applyPreset(name);
     pre.append(b);
   }
+  loadNetOptions();
   let saved = null;
   try { saved = JSON.parse(store.get('settings') || 'null'); } catch { }
   const preset = store.get('preset') || 'speedtest';
@@ -695,7 +845,8 @@ async function init() {
     if (ctrl && !test) { ctrl.onclose = null; ctrl.close(); status('Connecting…'); connect(); }
     loadHistory();
   });
-  $('start').onclick = () => test ? stopTest() : startTest();
+  $('start').onclick = () => test || net ? stopTest() : currentPreset === 'network' ? startNetwork() : startTest();
+  for (const el of document.querySelectorAll('#netPanel input')) el.addEventListener('change', () => { saveNetOptions(); updateVisibility(); });
   $('refresh').onclick = loadHistory;
 
   try {
@@ -716,7 +867,7 @@ async function init() {
     }
     if (info.snmp) {
       $('snmpPorts').textContent = `UDP ${info.snmp.poll} and ${info.snmp.trap}`;
-      $('snmpNote').textContent = `UDP ${info.snmp.poll} / ${info.snmp.trap}`;
+      $('snmpNote').textContent = $('netSnmpNote').textContent = `UDP ${info.snmp.poll} / ${info.snmp.trap}`;
       $('snmp-poll').querySelector('.what').textContent = `Polls → UDP ${info.snmp.poll}`;
       $('snmp-trap').querySelector('.what').textContent = `Informs → UDP ${info.snmp.trap}`;
     } else {
@@ -724,13 +875,17 @@ async function init() {
       $('snmp').disabled = true;
       $('snmp').parentElement.title = 'The SNMP test is off on this server, or WebRTC is unavailable';
       document.querySelector('[data-preset=snmp]').disabled = true;
+      $('netSnmp').checked = false;
+      $('netSnmp').disabled = true;
+      $('netSnmp').parentElement.title = $('snmp').parentElement.title;
       if (store.get('preset') === 'snmp') applyPreset('speedtest', false);
       updateVisibility();
     }
     if (!info.udp) {
       $('protocol').querySelector('option[value=udp]').disabled = true;
       $('protocol').querySelector('option[value=mixed]').disabled = true;
-      applyPreset('speedtest', false);
+      for (const p of NET_PARTS) if (p.udp) { const b = $('net-' + p.id); b.checked = false; b.disabled = true; b.parentElement.title = 'UDP-style tests are unavailable on this server'; }
+      if (currentPreset !== 'network') applyPreset('speedtest', false);
     }
   } catch { }
   try { help = await (await fetch('/api/help')).json(); } catch { }

@@ -2,6 +2,17 @@
 
 Each release's notes on GitHub are taken from its section below.
 
+## [1.14.0]
+
+### New
+- **Network test** on the browser page. It runs a speed test, then each part you tick, in turn: TCP load,
+  UDP load and mixed traffic at a share of the measured speed (80% by default), then a video call, a VoIP
+  call and gaming at their own rates. The SNMP test can run alongside every part. Each part is saved as its
+  own test, and a *Network test* card shows every part's result and report links.
+
+### Changed
+- The browser *Speed test* preset no longer includes the SNMP test. It's part of the Network test instead.
+
 ## [1.13.0]
 
 ### New

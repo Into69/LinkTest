@@ -70,7 +70,7 @@ input, select {
   font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px;
   padding: 6px 8px; min-width: 0; width: 100%;
 }
-input[type=checkbox] { width: auto; }
+input[type=checkbox] { width: auto; flex: none; }
 .pair { display: flex; gap: 6px; }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -113,6 +113,19 @@ th { color: var(--muted); font-weight: 600; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td a { color: var(--accent); margin-right: 8px; }
 
+.grid.form[hidden] { display: none; }
+.net-parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 16px; margin-bottom: 12px; }
+.net-parts label.check { grid-column: auto; }
+.net-steps { list-style: none; padding: 0; margin: 0; }
+.net-steps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.net-steps li:first-child { border-top: 0; }
+.net-steps .name { font-weight: 600; min-width: 120px; }
+.net-steps .state { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; min-width: 72px; color: var(--muted); }
+.net-steps .state.running { color: var(--accent); }
+.net-steps .state.done { color: var(--good); }
+.net-steps .state.failed { color: var(--bad); }
+.net-steps .detail { flex: 1 1 260px; min-width: 0; color: var(--muted); font-size: .9rem; }
+.net-steps .links { display: flex; gap: 12px; font-size: .9rem; }
 .speed-result { display: flex; flex-wrap: wrap; gap: 12px 40px; align-items: flex-end; margin: 4px 0 8px; }
 .speed-result > div { display: flex; flex-direction: column; min-width: 0; }
 .speed-result .label { color: var(--muted); font-size: .85rem; }
